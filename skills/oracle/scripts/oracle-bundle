@@ -117,11 +117,6 @@ if [[ -z "$(trim "$PROMPT")" ]]; then
   exit 2
 fi
 
-if [[ "${#FILE_SELECTORS[@]}" -eq 0 ]]; then
-  echo "error: at least one --file is required" >&2
-  exit 2
-fi
-
 cd "${ROOT_DIR}"
 
 selectors=()
