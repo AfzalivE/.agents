@@ -36,3 +36,4 @@ This skill uses a tiny local bundler script.
 - If you need diffs reviewed, paste the diff into the prompt or attach the diff file via `--file`.
 - Make the prompt completely standalone: include error text, constraints, and the desired output format (plan vs patch vs pros/cons).
 - Never include secrets (`.env`, tokens, key files).
+- Oracle can be slow while it reasons. Allow it several minutes to process.
