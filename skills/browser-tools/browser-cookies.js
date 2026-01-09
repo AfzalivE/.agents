@@ -2,6 +2,9 @@
 
 import puppeteer from "puppeteer-core";
 
+const args = process.argv.slice(2);
+const format = args.includes("--format=netscape") ? "netscape" : "human";
+
 const b = await Promise.race([
   puppeteer.connect({
     browserURL: "http://localhost:9222",
@@ -25,13 +28,22 @@ if (!p) {
 
 const cookies = await p.cookies();
 
-for (const cookie of cookies) {
-  console.log(`${cookie.name}: ${cookie.value}`);
-  console.log(`  domain: ${cookie.domain}`);
-  console.log(`  path: ${cookie.path}`);
-  console.log(`  httpOnly: ${cookie.httpOnly}`);
-  console.log(`  secure: ${cookie.secure}`);
-  console.log("");
+if (format === "netscape") {
+  for (const cookie of cookies) {
+    const includeSubdomains = cookie.domain.startsWith(".") ? "TRUE" : "FALSE";
+    const secure = cookie.secure ? "TRUE" : "FALSE";
+    const expiry = cookie.expires ? Math.floor(cookie.expires) : "0";
+    console.log(`${cookie.domain}\t${includeSubdomains}\t${cookie.path}\t${secure}\t${expiry}\t${cookie.name}\t${cookie.value}`);
+  }
+} else {
+  for (const cookie of cookies) {
+    console.log(`${cookie.name}: ${cookie.value}`);
+    console.log(`  domain: ${cookie.domain}`);
+    console.log(`  path: ${cookie.path}`);
+    console.log(`  httpOnly: ${cookie.httpOnly}`);
+    console.log(`  secure: ${cookie.secure}`);
+    console.log("");
+  }
 }
 
 await b.disconnect();

@@ -83,9 +83,12 @@ Common use cases:
 
 ```bash
 "$HOME/.agents/skills/browser-tools/browser-cookies.js"
+"$HOME/.agents/skills/browser-tools/browser-cookies.js" --format=netscape > cookies.txt
 ```
 
 Display all cookies for the current tab including domain, path, httpOnly, and secure flags. Use this to debug authentication issues or inspect session state.
+
+The `--format=netscape` option outputs cookies in Netscape format for use with curl/wget (`curl -b cookies.txt`).
 
 ## Extract Page Content
 
