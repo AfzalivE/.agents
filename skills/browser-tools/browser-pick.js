@@ -24,7 +24,9 @@ const b = await Promise.race([
   process.exit(1);
 });
 
-const p = (await b.pages()).at(-1);
+const pages = await b.pages();
+const p = pages.filter((pg) => pg.url().startsWith("http")).at(-1) ||
+  pages.at(-1);
 
 if (!p) {
   console.error("✗ No active tab found");

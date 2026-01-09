@@ -34,7 +34,9 @@ if (newTab) {
   await p.goto(url, { waitUntil: "domcontentloaded" });
   console.log("✓ Opened:", url);
 } else {
-  const p = (await b.pages()).at(-1);
+  const pages = await b.pages();
+  const p = pages.filter((pg) => pg.url().startsWith("http")).at(-1) ||
+    pages.at(-1);
   await p.goto(url, { waitUntil: "domcontentloaded" });
   console.log("✓ Navigated to:", url);
 }
