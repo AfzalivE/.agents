@@ -39,17 +39,8 @@ const result = await p.evaluate((c) => {
   return new AsyncFunction(`return (${c})`)();
 }, code);
 
-if (Array.isArray(result)) {
-  for (let i = 0; i < result.length; i++) {
-    if (i > 0) console.log("");
-    for (const [key, value] of Object.entries(result[i])) {
-      console.log(`${key}: ${value}`);
-    }
-  }
-} else if (typeof result === "object" && result !== null) {
-  for (const [key, value] of Object.entries(result)) {
-    console.log(`${key}: ${value}`);
-  }
+if (typeof result === "object" && result !== null) {
+  console.log(JSON.stringify(result, null, 2));
 } else {
   console.log(result);
 }
