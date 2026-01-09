@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 
-import puppeteer from "puppeteer-core";
 import { Readability } from "@mozilla/readability";
 import { JSDOM } from "jsdom";
 import TurndownService from "turndown";
 import { gfm } from "turndown-plugin-gfm";
+import { connectBrowser, getActivePage } from "./utils.js";
 
 // Global timeout - exit if script takes too long
 const TIMEOUT = 30000;
-const timeoutId = setTimeout(() => {
+setTimeout(() => {
   console.error("✗ Timeout after 30s");
   process.exit(1);
 }, TIMEOUT).unref();
@@ -26,35 +26,16 @@ if (!url) {
   process.exit(1);
 }
 
-const b = await Promise.race([
-  puppeteer.connect({
-    browserURL: "http://localhost:9222",
-    defaultViewport: null,
-  }),
-  new Promise((_, reject) => {
-    setTimeout(() => reject(new Error("timeout")), 5000).unref();
-  }),
-]).catch((e) => {
-  console.error("✗ Could not connect to browser:", e.message);
-  console.error("  Run: browser-start.js");
-  process.exit(1);
-});
-
-const pages = await b.pages();
-const p = pages.filter((pg) => pg.url().startsWith("http")).at(-1) ||
-  pages.at(-1);
-if (!p) {
-  console.error("✗ No active tab found");
-  process.exit(1);
-}
+const browser = await connectBrowser();
+const page = await getActivePage(browser);
 
 await Promise.race([
-  p.goto(url, { waitUntil: "networkidle2" }),
+  page.goto(url, { waitUntil: "networkidle2" }),
   new Promise((r) => setTimeout(r, 10000)),
 ]).catch(() => {});
 
 // Get HTML via CDP (works even with TrustedScriptURL restrictions)
-const client = await p.createCDPSession();
+const client = await page.createCDPSession();
 const { root } = await client.send("DOM.getDocument", {
   depth: -1,
   pierce: true,
@@ -64,7 +45,7 @@ const { outerHTML } = await client.send("DOM.getOuterHTML", {
 });
 await client.detach();
 
-const finalUrl = p.url();
+const finalUrl = page.url();
 
 // Extract with Readability
 const doc = new JSDOM(outerHTML, { url: finalUrl });

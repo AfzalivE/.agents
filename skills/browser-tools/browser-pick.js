@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import puppeteer from "puppeteer-core";
+import { connectBrowser, getActivePage, printResult } from "./utils.js";
 
 const message = process.argv.slice(2).join(" ");
 if (!message) {
@@ -10,31 +10,11 @@ if (!message) {
   process.exit(1);
 }
 
-const b = await Promise.race([
-  puppeteer.connect({
-    browserURL: "http://localhost:9222",
-    defaultViewport: null,
-  }),
-  new Promise((_, reject) => {
-    setTimeout(() => reject(new Error("timeout")), 5000).unref();
-  }),
-]).catch((e) => {
-  console.error("✗ Could not connect to browser:", e.message);
-  console.error("  Run: browser-start.js");
-  process.exit(1);
-});
-
-const pages = await b.pages();
-const p = pages.filter((pg) => pg.url().startsWith("http")).at(-1) ||
-  pages.at(-1);
-
-if (!p) {
-  console.error("✗ No active tab found");
-  process.exit(1);
-}
+const browser = await connectBrowser();
+const page = await getActivePage(browser);
 
 // Inject pick() helper into current page
-await p.evaluate(() => {
+await page.evaluate(() => {
   if (!window.pick) {
     window.pick = async (message) => {
       if (!message) {
@@ -146,12 +126,8 @@ await p.evaluate(() => {
   }
 });
 
-const result = await p.evaluate((msg) => window.pick(msg), message);
+const result = await page.evaluate((msg) => window.pick(msg), message);
 
-if (typeof result === "object" && result !== null) {
-  console.log(JSON.stringify(result, null, 2));
-} else {
-  console.log(result);
-}
+printResult(result);
 
-await b.disconnect();
+await browser.disconnect();

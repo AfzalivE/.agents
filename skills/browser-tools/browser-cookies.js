@@ -1,34 +1,14 @@
 #!/usr/bin/env node
 
-import puppeteer from "puppeteer-core";
+import { connectBrowser, getActivePage } from "./utils.js";
 
 const args = process.argv.slice(2);
 const format = args.includes("--format=netscape") ? "netscape" : "human";
 
-const b = await Promise.race([
-  puppeteer.connect({
-    browserURL: "http://localhost:9222",
-    defaultViewport: null,
-  }),
-  new Promise((_, reject) => {
-    setTimeout(() => reject(new Error("timeout")), 5000).unref();
-  }),
-]).catch((e) => {
-  console.error("✗ Could not connect to browser:", e.message);
-  console.error("  Run: browser-start.js");
-  process.exit(1);
-});
+const browser = await connectBrowser();
+const page = await getActivePage(browser);
 
-const pages = await b.pages();
-const p = pages.filter((pg) => pg.url().startsWith("http")).at(-1) ||
-  pages.at(-1);
-
-if (!p) {
-  console.error("✗ No active tab found");
-  process.exit(1);
-}
-
-const cookies = await p.cookies();
+const cookies = await page.cookies();
 
 if (format === "netscape") {
   for (const cookie of cookies) {
@@ -48,4 +28,4 @@ if (format === "netscape") {
   }
 }
 
-await b.disconnect();
+await browser.disconnect();

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import puppeteer from "puppeteer-core";
+import { connectBrowser, getActivePage } from "./utils.js";
 
 const url = process.argv[2];
 const newTab = process.argv[3] === "--new";
@@ -15,30 +15,16 @@ if (!url) {
   process.exit(1);
 }
 
-const b = await Promise.race([
-  puppeteer.connect({
-    browserURL: "http://localhost:9222",
-    defaultViewport: null,
-  }),
-  new Promise((_, reject) => {
-    setTimeout(() => reject(new Error("timeout")), 5000).unref();
-  }),
-]).catch((e) => {
-  console.error("✗ Could not connect to browser:", e.message);
-  console.error("  Run: browser-start.js");
-  process.exit(1);
-});
+const browser = await connectBrowser();
 
 if (newTab) {
-  const p = await b.newPage();
-  await p.goto(url, { waitUntil: "domcontentloaded" });
+  const page = await browser.newPage();
+  await page.goto(url, { waitUntil: "domcontentloaded" });
   console.log("✓ Opened:", url);
 } else {
-  const pages = await b.pages();
-  const p = pages.filter((pg) => pg.url().startsWith("http")).at(-1) ||
-    pages.at(-1);
-  await p.goto(url, { waitUntil: "domcontentloaded" });
+  const page = await getActivePage(browser);
+  await page.goto(url, { waitUntil: "domcontentloaded" });
   console.log("✓ Navigated to:", url);
 }
 
-await b.disconnect();
+await browser.disconnect();
