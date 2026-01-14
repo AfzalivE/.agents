@@ -30,6 +30,7 @@ Use this skill to reimplement the current branch on a new branch with a clean, n
    - Each commit must:
      - Introduce a single coherent idea
      - Include a clear commit message and description
+     - Follow best practices for the message as outlined by the `git-commit` skill
    - **Use `git commit --no-verify` for all intermediate commits**
      - Pre-commit hooks check tests, types, and imports that may not pass until the full implementation is complete; do not waste time fixing issues in intermediate commits that will be resolved by later commits
 
