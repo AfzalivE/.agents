@@ -120,7 +120,7 @@ fi
 cd "${ROOT_DIR}"
 
 selectors=()
-for raw in "${FILE_SELECTORS[@]}"; do
+for raw in "${FILE_SELECTORS[@]-}"; do
   IFS=',' read -r -a parts <<<"$raw"
   for part in "${parts[@]}"; do
     part="$(trim "$part")"
