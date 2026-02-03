@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SKILL_DIR="$HOME/.agents/skills/ms-openapi-explorer"
+CACHE_DIR="$SKILL_DIR/cache"
+DOMAINS_DIR="$CACHE_DIR/domains"
+FULL_SPEC="$CACHE_DIR/graph-v1.0-openapi.yaml"
+LAST_FETCHED="$CACHE_DIR/.last-fetched"
+SPEC_URL="https://raw.githubusercontent.com/microsoftgraph/msgraph-metadata/master/openapi/v1.0/openapi.yaml"
+MAX_AGE_DAYS=7
+
+usage() {
+    echo "Usage: fetch-spec [--force]"
+    echo ""
+    echo "Downloads Microsoft Graph API v1.0 OpenAPI spec and splits into domains."
+    echo ""
+    echo "Options:"
+    echo "  --force    Force refresh even if cache is fresh"
+    exit 0
+}
+
+is_stale() {
+    if [[ ! -f "$LAST_FETCHED" ]]; then
+        return 0
+    fi
+
+    local last_ts
+    last_ts=$(cat "$LAST_FETCHED")
+    local now_ts
+    now_ts=$(date +%s)
+    local age_days=$(( (now_ts - last_ts) / 86400 ))
+
+    [[ $age_days -ge $MAX_AGE_DAYS ]]
+}
+
+fetch_full_spec() {
+    echo "Fetching Microsoft Graph API v1.0 OpenAPI spec..."
+    mkdir -p "$CACHE_DIR" "$DOMAINS_DIR"
+
+    if ! curl -fsSL "$SPEC_URL" -o "$FULL_SPEC"; then
+        echo "Error: Failed to download spec from $SPEC_URL" >&2
+        exit 1
+    fi
+
+    date +%s > "$LAST_FETCHED"
+    echo "Downloaded to $FULL_SPEC"
+}
+
+extract_domain() {
+    local domain="$1"
+    local pattern="$2"
+    local output="$DOMAINS_DIR/$domain.yaml"
+
+    echo "  Extracting $domain..."
+
+    yq eval "
+        {
+            \"openapi\": .openapi,
+            \"info\": .info,
+            \"paths\": (.paths | to_entries | map(select(.key | test(\"$pattern\"))) | from_entries),
+            \"components\": .components
+        }
+    " "$FULL_SPEC" > "$output"
+}
+
+split_domains() {
+    echo "Splitting spec into domains..."
+
+    extract_domain "calendar" "/calendar|/events"
+    extract_domain "mail" "/messages|/mailFolders|/inferenceClassification"
+    extract_domain "drive" "/drive|/drives"
+    extract_domain "users" "/users"
+    extract_domain "groups" "/groups"
+    extract_domain "teams" "/teams|/chats"
+    extract_domain "planner" "/planner"
+    extract_domain "contacts" "/contacts"
+    extract_domain "onenote" "/onenote"
+    extract_domain "todo" "/todo"
+
+    echo "Domain splitting complete."
+}
+
+# Parse arguments
+FORCE=false
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --force)
+            FORCE=true
+            shift
+            ;;
+        --help|-h)
+            usage
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            usage
+            ;;
+    esac
+done
+
+# Main logic
+if [[ "$FORCE" == "true" ]] || [[ ! -f "$FULL_SPEC" ]] || is_stale; then
+    fetch_full_spec
+    split_domains
+else
+    echo "Cache is fresh (less than $MAX_AGE_DAYS days old). Use --force to refresh."
+fi
