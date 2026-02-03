@@ -1,0 +1,16 @@
+runner: pi  # claude or pi
+
+thresholds:
+  weaken_days: 60   # Days untouched before unlinking from MOC
+  archive_days: 90  # Days untouched before moving to archive/
+
+protected_files:
+  - Index.md
+  - Agenda MOC.md
+  - Preferences.md
+  - Operating Rhythm.md
+  - Decisions - .agents.md
+
+protected_note_tags:
+  - agenda
+  - planning

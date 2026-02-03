@@ -4,3 +4,5 @@
 .env
 .env.*
 node_modules/
+.agents/
+agent-brain/

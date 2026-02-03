@@ -1,5 +1,13 @@
 {
+  "commands": {
+    "blocked": [
+      "npx"
+    ]
+  },
   "network": {
+    "allowMachLookup": [
+      "com.apple.CalendarAgent"
+    ],
     "allowedDomains": [
       "localhost",
       "127.0.0.1",
@@ -50,7 +58,8 @@
       "twist.com",
       "*.twist.com",
       "doist.com",
-      "*.doist.com"
+      "*.doist.com",
+      "*.gradle.org"
     ],
     "deniedDomains": [],
     "allowLocalBinding": true,
