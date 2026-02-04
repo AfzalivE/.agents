@@ -6,6 +6,7 @@
 - Use the `browser-tools` skill when you need to interact with web pages or automate browser actions.
 - Use the `homeassistant-ops` skill when you need to operate/refactor a Home Assistant instance.
 - Use the `openscad` skill when you need to create and render OpenSCAD 3D models.
+- Use the `sentry` skill when you need to fetch and analyze Sentry issues, events, and logs.
 
 ## Tools
 
