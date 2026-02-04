@@ -8,6 +8,7 @@
 - Use the `openscad` skill when you need to create and render OpenSCAD 3D models.
 - Use the `sentry` skill when you need to fetch and analyze Sentry issues, events, and logs.
 - Use the `web-design` skill when you need to design and implement distinctive, production-ready web interfaces.
+- Use the `update-changelog` skill when you need to update CHANGELOG.md following Keep a Changelog.
 
 ## Tools
 
