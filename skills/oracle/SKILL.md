@@ -3,32 +3,36 @@ name: oracle
 description: Get a second opinion by bundling a prompt + a curated file set, then asking another powerful LLM for debugging, refactor advice, design checks, or cross-validation.
 ---
 
-# Oracle (cross-agent)
+# Oracle (cross-model)
 
-Use this skill when you want a fast “second brain” pass from the other agent:
+Use this skill when you want a “second brain” pass from an *opposite model family* than the one you’re currently using.
 
-- **In Codex**: bundle context, then ask **Claude CLI** (Opus 4.5) for review.
-- **In Claude**: bundle context, then ask **Codex CLI** (GPT‑5.2, `xhigh` reasoning) for review.
-
-This skill uses a tiny local bundler script.
+- Under a model powered by **OpenAI** (e.g. GPT): bundle context, then ask **Claude CLI** (Opus 4.5) for review.
+- Under a model powered by others (e.g. Claude, Gemini): bundle context, then ask **Codex CLI** (GPT‑5.2, `xhigh` reasoning) for review.
 
 ## Workflow
 
 1. Pick the smallest file set that contains the truth (avoid secrets by default).
 2. Verify the selected files / bundle look right.
-3. Run the Oracle script for your current agent.
+3. Run the oracle target you want: **Opus** (`oracle-to-opus`) if your current session is using an OpenAI model, **GPT‑5.2** (`oracle-to-gpt`) otherwise.
 
 ## Commands
 
-- When running in **Codex**:
-  - Preview selection: `"$HOME/.agents/skills/oracle/scripts/oracle-bundle" --dry-run -p "<task>" --file "src/**" --file "!**/*.test.*"`
-  - Preview bundle: `"$HOME/.agents/skills/oracle/scripts/oracle-bundle" -p "<task>" --file "src/**" --file "!**/*.test.*"`
-  - Run: `"$HOME/.agents/skills/oracle/scripts/oracle-to-claude" -p "<task>" --file "src/**" --file "!**/*.test.*"`
+From the skill directory:
 
-- When running in **Claude** or any other agent:
-  - Preview selection: `"$HOME/.agents/skills/oracle/scripts/oracle-bundle" --dry-run -p "<task>" --file "src/**" --file "!**/*.test.*"`
-  - Preview bundle: `"$HOME/.agents/skills/oracle/scripts/oracle-bundle" -p "<task>" --file "src/**" --file "!**/*.test.*"`
-  - Run: `"$HOME/.agents/skills/oracle/scripts/oracle-to-codex" -p "<task>" --file "src/**" --file "!**/*.test.*"`
+```bash
+# Preview selection
+$HOME/.agents/skills/oracle/scripts/oracle-bundle --dry-run -p "<task>" --file "src/**" --file "!**/*.test.*"
+
+# Preview bundle
+$HOME/.agents/skills/oracle/scripts/oracle-bundle -p "<task>" --file "src/**" --file "!**/*.test.*"
+
+# Ask Claude Opus (Anthropic) if runnign under a model powered by OpenAI
+$HOME/.agents/skills/oracle/scripts/oracle-to-claude -p "<task>" --file "src/**" --file "!**/*.test.*"
+
+# Ask GPT‑5.2 (OpenAI) if runnign under any other model
+$HOME/.agents/skills/oracle/scripts/oracle-to-codex -p "<task>" --file "src/**" --file "!**/*.test.*"
+```
 
 ## Tips
 
