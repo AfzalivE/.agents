@@ -1,16 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Symlink ~/.agents/skills and ~/.agents/AGENTS.md into Codex + Claude.
+# Sync ~/.agents into various coding agents via symlinks.
 #
-# ~/.agents is the source of truth; targets are replaced with symlinks when needed.
+# Source of truth:
+#   - ~/.agents/skills                    (Agent Skills standard)
+#   - ~/.agents/AGENTS.md                 (shared instructions)
+#   - ~/.agents/pi/extensions             (Pi-specific extensions)
+#
+# Targets:
+#   - Codex:  ~/.codex/skills + ~/.codex/AGENTS.md
+#   - Claude: ~/.claude/skills + ~/.claude/CLAUDE.md
+#   - Pi:     ~/.pi/agent/skills + ~/.pi/agent/AGENTS.md + ~/.pi/agent/extensions
 
 AGENTS_SKILLS_DIR="${HOME}/.agents/skills"
 AGENTS_INSTRUCTIONS_FILE="${HOME}/.agents/AGENTS.md"
+AGENTS_PI_EXTENSIONS_DIR="${HOME}/.agents/pi/extensions"
+
 CODEX_SKILLS_DIR="${HOME}/.codex/skills"
 CLAUDE_SKILLS_DIR="${HOME}/.claude/skills"
+PI_SKILLS_DIR="${HOME}/.pi/agent/skills"
+PI_EXTENSIONS_DIR="${HOME}/.pi/agent/extensions"
+
 CODEX_INSTRUCTIONS_FILE="${HOME}/.codex/AGENTS.md"
 CLAUDE_INSTRUCTIONS_FILE="${HOME}/.claude/CLAUDE.md"
+PI_INSTRUCTIONS_FILE="${HOME}/.pi/agent/AGENTS.md"
 
 DRY_RUN=0
 YES=0
@@ -18,19 +32,23 @@ PRUNE=0
 
 usage() {
   cat <<'EOF'
-	Symlink ~/.agents/skills and ~/.agents/AGENTS.md into Codex + Claude.
+	Symlink ~/.agents into Codex + Claude + Pi.
 
 Usage:
-  sync-agent-skills [--dry-run] [--yes] [--prune]
+  sync [--dry-run] [--yes] [--prune]
 
 Options:
   --dry-run   Print planned changes only
   --yes       Apply without prompting
-  --prune     Remove skills from agent folders that are not present in ~/.agents/skills
+  --prune     Remove skills/extensions from agent folders that are not present in ~/.agents
 
 Notes:
   - ~/.codex/skills/.system is never touched.
-  - ~/.agents/AGENTS.md is symlinked to ~/.codex/AGENTS.md and ~/.claude/CLAUDE.md.
+  - ~/.agents/AGENTS.md is symlinked to:
+      - ~/.codex/AGENTS.md
+      - ~/.claude/CLAUDE.md
+      - ~/.pi/agent/AGENTS.md
+  - Pi extensions are synced from ~/.agents/pi/extensions to ~/.pi/agent/extensions.
 EOF
 }
 
@@ -60,7 +78,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-mkdir -p "${AGENTS_SKILLS_DIR}" "${CODEX_SKILLS_DIR}" "${CLAUDE_SKILLS_DIR}"
+mkdir -p \
+  "${AGENTS_SKILLS_DIR}" \
+  "${AGENTS_PI_EXTENSIONS_DIR}" \
+  "${CODEX_SKILLS_DIR}" \
+  "${CLAUDE_SKILLS_DIR}" \
+  "${PI_SKILLS_DIR}" \
+  "${PI_EXTENSIONS_DIR}"
 
 skills=()
 for skill_dir in "${AGENTS_SKILLS_DIR}"/*; do
@@ -68,6 +92,26 @@ for skill_dir in "${AGENTS_SKILLS_DIR}"/*; do
   skill_name="$(basename "${skill_dir}")"
   [[ "${skill_name}" == .* ]] && continue
   skills+=("${skill_name}")
+done
+
+pi_extensions=()
+for entry in "${AGENTS_PI_EXTENSIONS_DIR}"/*; do
+  [[ -e "${entry}" ]] || continue
+  base="$(basename "${entry}")"
+  [[ "${base}" == .* ]] && continue
+
+  if [[ -d "${entry}" ]]; then
+    pi_extensions+=("${base}")
+    continue
+  fi
+
+  if [[ -f "${entry}" ]]; then
+    # pi auto-discovers *.ts. Ignore .d.ts (types-only).
+    case "${base}" in
+      *.d.ts) continue ;;
+      *.ts) pi_extensions+=("${base}") ;;
+    esac
+  fi
 done
 
 declare -a plan=()
@@ -81,7 +125,13 @@ plan_symlink() {
 plan_remove() {
   local path="$1"
   case "${path}" in
-    "${CODEX_SKILLS_DIR}"/* | "${CLAUDE_SKILLS_DIR}"/* | "${CODEX_INSTRUCTIONS_FILE}" | "${CLAUDE_INSTRUCTIONS_FILE}")
+    "${CODEX_SKILLS_DIR}"/* | \
+    "${CLAUDE_SKILLS_DIR}"/* | \
+    "${PI_SKILLS_DIR}"/* | \
+    "${PI_EXTENSIONS_DIR}"/* | \
+    "${CODEX_INSTRUCTIONS_FILE}" | \
+    "${CLAUDE_INSTRUCTIONS_FILE}" | \
+    "${PI_INSTRUCTIONS_FILE}")
       plan+=("rmrf:${path}")
       ;;
     *)
@@ -91,9 +141,10 @@ plan_remove() {
   esac
 }
 
+# --- Skills ---
 for skill_name in "${skills[@]}"; do
   skill_dir="${AGENTS_SKILLS_DIR}/${skill_name}"
-  for target_root in "${CODEX_SKILLS_DIR}" "${CLAUDE_SKILLS_DIR}"; do
+  for target_root in "${CODEX_SKILLS_DIR}" "${CLAUDE_SKILLS_DIR}" "${PI_SKILLS_DIR}"; do
     target="${target_root}/${skill_name}"
 
     if [[ -L "${target}" ]]; then
@@ -121,8 +172,9 @@ for skill_name in "${skills[@]}"; do
   done
 done
 
+# --- Instructions ---
 if [[ -f "${AGENTS_INSTRUCTIONS_FILE}" ]]; then
-  for target in "${CODEX_INSTRUCTIONS_FILE}" "${CLAUDE_INSTRUCTIONS_FILE}"; do
+  for target in "${CODEX_INSTRUCTIONS_FILE}" "${CLAUDE_INSTRUCTIONS_FILE}" "${PI_INSTRUCTIONS_FILE}"; do
     if [[ -L "${target}" ]]; then
       existing_target="$(readlink "${target}")"
       if [[ "${existing_target}" == "${AGENTS_INSTRUCTIONS_FILE}" ]]; then
@@ -150,8 +202,35 @@ else
   echo "warn: ${AGENTS_INSTRUCTIONS_FILE} not found; skipping instruction sync" >&2
 fi
 
+# --- Pi extensions ---
+for ext_name in "${pi_extensions[@]}"; do
+  src="${AGENTS_PI_EXTENSIONS_DIR}/${ext_name}"
+  dest="${PI_EXTENSIONS_DIR}/${ext_name}"
+
+  if [[ -L "${dest}" ]]; then
+    existing_target="$(readlink "${dest}")"
+    if [[ "${existing_target}" == "${src}" ]]; then
+      continue
+    fi
+    plan_remove "${dest}"
+    plan_symlink "${src}" "${dest}"
+    continue
+  fi
+
+  if [[ -e "${dest}" ]]; then
+    # Match instructions behavior: replace existing file/dir with the symlink.
+    plan_remove "${dest}"
+    plan_symlink "${src}" "${dest}"
+    continue
+  fi
+
+  plan_symlink "${src}" "${dest}"
+done
+
+# --- Prune ---
 if [[ "${PRUNE}" -eq 1 ]]; then
-  for target_root in "${CODEX_SKILLS_DIR}" "${CLAUDE_SKILLS_DIR}"; do
+  # Prune skills
+  for target_root in "${CODEX_SKILLS_DIR}" "${CLAUDE_SKILLS_DIR}" "${PI_SKILLS_DIR}"; do
     for entry in "${target_root}"/*; do
       [[ -e "${entry}" ]] || continue
       base="$(basename "${entry}")"
@@ -169,6 +248,24 @@ if [[ "${PRUNE}" -eq 1 ]]; then
         plan_remove "${entry}"
       fi
     done
+  done
+
+  # Prune pi extensions
+  for entry in "${PI_EXTENSIONS_DIR}"/*; do
+    [[ -e "${entry}" ]] || continue
+    base="$(basename "${entry}")"
+
+    keep=0
+    for ext_name in "${pi_extensions[@]}"; do
+      if [[ "${base}" == "${ext_name}" ]]; then
+        keep=1
+        break
+      fi
+    done
+
+    if [[ "${keep}" -eq 0 ]]; then
+      plan_remove "${entry}"
+    fi
   done
 fi
 
