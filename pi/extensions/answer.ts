@@ -354,7 +354,7 @@ class QnAComponent implements Component {
 
 		// Current question
 		const q = this.questions[this.currentIndex];
-		const questionText = `${this.bold("Q:")} ${q.question}`;
+		const questionText = `> ${q.question}`;
 		const wrappedQuestion = wrapTextWithAnsi(questionText, contentWidth);
 		for (const line of wrappedQuestion) {
 			lines.push(padToWidth(boxLine(line)));
@@ -363,7 +363,7 @@ class QnAComponent implements Component {
 		// Context if present
 		if (q.context) {
 			lines.push(padToWidth(emptyBoxLine()));
-			const contextText = this.gray(`> ${q.context}`);
+			const contextText = this.gray(`${q.context}`);
 			const wrappedContext = wrapTextWithAnsi(contextText, contentWidth - 2);
 			for (const line of wrappedContext) {
 				lines.push(padToWidth(boxLine(line)));
@@ -513,7 +513,7 @@ export default function (pi: ExtensionAPI) {
 			pi.sendMessage(
 				{
 					customType: "answers",
-					content: "I answered your questions in the following way:\n\n" + answersResult,
+					content: "Here are my answers to your questions:\n\n" + answersResult,
 					display: true,
 				},
 				{ triggerTurn: true },
