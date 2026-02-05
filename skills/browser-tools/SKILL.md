@@ -21,6 +21,7 @@ npm install
 ```bash
 "$HOME/.agents/skills/browser-tools/browser-start.js"              # Fresh profile
 "$HOME/.agents/skills/browser-tools/browser-start.js" --profile    # Copy your profile (cookies, logins)
+"$HOME/.agents/skills/browser-tools/browser-start.js" --watch      # Start background JSONL logging
 "$HOME/.agents/skills/browser-tools/browser-start.js" --browser chromium
 "$HOME/.agents/skills/browser-tools/browser-start.js" --browser chrome
 ```
@@ -71,13 +72,16 @@ Capture current viewport and return temporary file path. Use this to visually in
 "$HOME/.agents/skills/browser-tools/browser-pick.js" "Click the submit button"
 ```
 
-**IMPORTANT**: Use this tool when the user wants to select specific DOM elements on the page. This launches an interactive picker that lets the user click elements to select them. The user can select multiple elements (Cmd/Ctrl+Click) and press Enter when done. The tool returns CSS selectors for the selected elements.
+Use this when the user wants to select specific DOM elements on the page. This launches an interactive picker: click elements to select them, Cmd/Ctrl+Click for multi-select, Enter to finish.
 
-Common use cases:
+## Dismiss cookie banners
 
-- User says "I want to click that button" → Use this tool to let them select it
-- User says "extract data from these items" → Use this tool to let them select the elements
-- When you need specific selectors but the page structure is complex or ambiguous
+```bash
+"$HOME/.agents/skills/browser-tools/browser-dismiss-cookies.js"          # Accept cookies
+"$HOME/.agents/skills/browser-tools/browser-dismiss-cookies.js" --reject # Reject (where possible)
+```
+
+Run after navigation if cookie dialogs interfere with interaction.
 
 ## Cookies
 
@@ -86,7 +90,7 @@ Common use cases:
 "$HOME/.agents/skills/browser-tools/browser-cookies.js" --format=netscape > cookies.txt
 ```
 
-Display all cookies for the current tab including domain, path, httpOnly, and secure flags. Use this to debug authentication issues or inspect session state.
+Display all cookies for the current tab including domain, path, httpOnly, and secure flags.
 
 The `--format=netscape` option outputs cookies in Netscape format for use with curl/wget (`curl -b cookies.txt`).
 
@@ -96,7 +100,40 @@ The `--format=netscape` option outputs cookies in Netscape format for use with c
 "$HOME/.agents/skills/browser-tools/browser-content.js" https://example.com
 ```
 
-Navigate to a URL and extract readable content as markdown. Uses Mozilla Readability for article extraction and Turndown for HTML-to-markdown conversion. Works on pages with JavaScript content (waits for page to load).
+Navigate to a URL and extract readable content as markdown. Uses Mozilla Readability for article extraction and Turndown for HTML-to-markdown conversion.
+
+## Background logging (console + errors + network)
+
+Start the watcher:
+
+```bash
+"$HOME/.agents/skills/browser-tools/browser-watch.js"
+```
+
+Or launch the browser with logging enabled:
+
+```bash
+"$HOME/.agents/skills/browser-tools/browser-start.js" --watch
+```
+
+Logs are written as JSONL to a temp directory by default:
+
+- Default: `/tmp/agent-browser-tools/logs/YYYY-MM-DD/<targetId>.jsonl`
+- Override: `BROWSER_TOOLS_LOG_ROOT=/some/dir`
+
+Tail the most recent log:
+
+```bash
+"$HOME/.agents/skills/browser-tools/browser-logs-tail.js"           # dump and exit
+"$HOME/.agents/skills/browser-tools/browser-logs-tail.js" --follow  # follow
+```
+
+Summarize network responses (status codes, failures):
+
+```bash
+"$HOME/.agents/skills/browser-tools/browser-net-summary.js"
+"$HOME/.agents/skills/browser-tools/browser-net-summary.js" --file /path/to/log.jsonl
+```
 
 ## When to Use
 

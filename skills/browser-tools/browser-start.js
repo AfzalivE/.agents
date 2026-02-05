@@ -2,21 +2,27 @@
 
 import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer-core";
 
 const args = process.argv.slice(2);
 let useProfile = false;
+let startWatch = false;
 let browserChoice = "auto"; // auto|chromium|chrome
 let executableOverride = undefined;
 let profileSrcOverride = undefined;
 
 const usage = () => {
   console.log(
-    "Usage: browser-start.js [--profile] [--browser <chromium|chrome>] [--executable <path>]",
+    "Usage: browser-start.js [--profile] [--watch] [--browser <chromium|chrome>] [--executable <path>]",
   );
   console.log("\nOptions:");
   console.log(
     "  --profile              Copy your browser profile (cookies, logins)",
+  );
+  console.log(
+    "  --watch                Start browser-watch.js in the background (JSONL logs)",
   );
   console.log(
     "  --browser <name>       Select browser: chromium, chrome (default: auto)",
@@ -30,12 +36,17 @@ const usage = () => {
   console.log(
     "  BROWSER_TOOLS_PROFILE_SRC  Profile directory to rsync from (overrides auto)",
   );
+  console.log(
+    "  BROWSER_TOOLS_LOG_ROOT  Directory for browser-watch logs (defaults to /tmp/agent-browser-tools/logs)",
+  );
 };
 
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
   if (arg === "--profile") {
     useProfile = true;
+  } else if (arg === "--watch") {
+    startWatch = true;
   } else if (arg === "--browser") {
     browserChoice = args[++i] ?? "";
   } else if (arg.startsWith("--browser=")) {
@@ -61,6 +72,12 @@ if (!["auto", "chromium", "chrome"].includes(browserChoice)) {
 }
 
 const SCRAPING_DIR = `${process.env.HOME}/.cache/browser-tools`;
+
+const startWatcher = () => {
+  const scriptDir = dirname(fileURLToPath(import.meta.url));
+  const watcherPath = join(scriptDir, "browser-watch.js");
+  spawn(process.execPath, [watcherPath], { detached: true, stdio: "ignore" }).unref();
+};
 
 const findExecutable = (candidates) => {
   for (const candidate of candidates) {
@@ -147,7 +164,9 @@ try {
     defaultViewport: null,
   });
   await browser.disconnect();
-  console.log("✓ Browser already running on :9222");
+
+  if (startWatch) startWatcher();
+  console.log(`✓ Browser already running on :9222${startWatch ? " (watch enabled)" : ""}`);
   process.exit(0);
 } catch {}
 
@@ -212,6 +231,8 @@ if (!connected) {
   process.exit(1);
 }
 
+if (startWatch) startWatcher();
+
 console.log(
-  `✓ ${browserConfig.label} started on :9222${useProfile ? " with your profile" : ""}`,
+  `✓ ${browserConfig.label} started on :9222${useProfile ? " with your profile" : ""}${startWatch ? " (watch enabled)" : ""}`,
 );
