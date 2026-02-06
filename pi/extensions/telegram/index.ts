@@ -30,8 +30,8 @@ type Config = {
 
 const AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
 const RUN_DIR = path.join(AGENT_DIR, "run");
-const SOCKET_PATH = path.join(RUN_DIR, "pi-telegram.sock");
-const CONFIG_DIR = path.join(AGENT_DIR, "pi-telegram");
+const SOCKET_PATH = path.join(RUN_DIR, "telegram.sock");
+const CONFIG_DIR = path.join(AGENT_DIR, "telegram");
 const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
 
 function sleep(ms: number) {
@@ -131,7 +131,7 @@ async function ensureDaemonRunning(daemonPath: string): Promise<void> {
     await sleep(100);
   }
 
-  throw new Error("Failed to start pi-telegram daemon (socket not available)");
+  throw new Error("Failed to start telegram daemon (socket not available)");
 }
 
 async function sendEphemeral(msg: ClientToDaemonMessage): Promise<void> {
@@ -212,16 +212,16 @@ export default function (pi: ExtensionAPI) {
     socket.once("close", () => {
       disconnect();
       if (state.lastCtx?.hasUI) {
-        state.lastCtx.ui.setStatus("pi-telegram", undefined);
-        state.lastCtx.ui.setWidget("pi-telegram", undefined);
+        state.lastCtx.ui.setStatus("telegram", undefined);
+        state.lastCtx.ui.setWidget("telegram", undefined);
       }
     });
 
     socket.once("error", () => {
       disconnect();
       if (state.lastCtx?.hasUI) {
-        state.lastCtx.ui.setStatus("pi-telegram", undefined);
-        state.lastCtx.ui.setWidget("pi-telegram", undefined);
+        state.lastCtx.ui.setStatus("telegram", undefined);
+        state.lastCtx.ui.setWidget("telegram", undefined);
       }
     });
 
@@ -266,7 +266,7 @@ export default function (pi: ExtensionAPI) {
     if (msg.type === "registered") {
       state.windowNo = msg.windowNo;
       if (state.lastCtx?.hasUI) {
-        state.lastCtx.ui.setStatus("pi-telegram", `telegram: connected (window ${msg.windowNo})`);
+        state.lastCtx.ui.setStatus("telegram", `telegram: connected (window ${msg.windowNo})`);
       }
       return;
     }
@@ -320,8 +320,8 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_shutdown", async (_event, ctx) => {
     disconnect();
     if (ctx.hasUI) {
-      ctx.ui.setStatus("pi-telegram", undefined);
-      ctx.ui.setWidget("pi-telegram", undefined);
+      ctx.ui.setStatus("telegram", undefined);
+      ctx.ui.setWidget("telegram", undefined);
     }
   });
 
@@ -357,8 +357,8 @@ export default function (pi: ExtensionAPI) {
       if (sub === "stop") {
         disconnect();
         if (ctx.hasUI) {
-          ctx.ui.setStatus("pi-telegram", undefined);
-          ctx.ui.setWidget("pi-telegram", undefined);
+          ctx.ui.setStatus("telegram", undefined);
+          ctx.ui.setWidget("telegram", undefined);
         }
         notify("Disconnected (this window removed from Telegram /windows).", "info");
         return;
@@ -394,7 +394,7 @@ export default function (pi: ExtensionAPI) {
           }
           const token = await ctx.ui.input(
             "Telegram bot token",
-            "Paste the bot token (saved to ~/.pi/agent/pi-telegram/config.json)",
+            "Paste the bot token (saved to ~/.pi/agent/telegram/config.json)",
           );
           if (!token) {
             notify("Cancelled.", "info");
@@ -416,7 +416,7 @@ export default function (pi: ExtensionAPI) {
 
           if (ctx.hasUI) {
             ctx.ui.notify(`Send this in Telegram: /pin ${pin.code} (valid 60s)`, "info");
-            ctx.ui.setWidget("pi-telegram", [
+            ctx.ui.setWidget("telegram", [
               `Telegram pairing: send /pin ${pin.code} (valid 60s)`,
               "After pairing, use /windows and /window N in Telegram.",
               "Use /telegram stop to disconnect this window.",
