@@ -2,4 +2,4 @@
 
 `scripts/oracle-to-claude` runs:
 
-- `claude -p --model opus --tools ""`
+- `claude -p --model opus-4.6 --tools ""`

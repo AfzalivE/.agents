@@ -7,14 +7,14 @@ description: Get a second opinion by bundling a prompt + a curated file set, the
 
 Use this skill when you want a “second brain” pass from an *opposite model family* than the one you’re currently using.
 
-- Under a model powered by **OpenAI** (e.g. GPT): bundle context, then ask **Claude CLI** (Opus 4.5) for review.
-- Under a model powered by others (e.g. Claude, Gemini): bundle context, then ask **Codex CLI** (GPT‑5.2, `xhigh` reasoning) for review.
+- Under a model powered by **OpenAI** (e.g. GPT): bundle context, then ask **Claude CLI** (Opus 4.6) for review.
+- Under a model powered by others (e.g. Claude, Gemini): bundle context, then ask **Codex CLI** (GPT-5.3-Codex, `xhigh` reasoning) for review.
 
 ## Workflow
 
 1. Pick the smallest file set that contains the truth (avoid secrets by default).
 2. Verify the selected files / bundle look right.
-3. Run the oracle target you want: **Opus** (`oracle-to-opus`) if your current session is using an OpenAI model, **GPT‑5.2** (`oracle-to-gpt`) otherwise.
+3. Run the oracle target you want: **Opus** (`oracle-to-opus`) if your current session is using an OpenAI model, **GPT-5.3-Codex** (`oracle-to-gpt`) otherwise.
 
 ## Commands
 
@@ -30,7 +30,7 @@ $HOME/.agents/skills/oracle/scripts/oracle-bundle -p "<task>" --file "src/**" --
 # Ask Claude Opus (Anthropic) if runnign under a model powered by OpenAI
 $HOME/.agents/skills/oracle/scripts/oracle-to-claude -p "<task>" --file "src/**" --file "!**/*.test.*"
 
-# Ask GPT‑5.2 (OpenAI) if runnign under any other model
+# Ask GPT-5.3-Codex (OpenAI) if runnign under any other model
 $HOME/.agents/skills/oracle/scripts/oracle-to-codex -p "<task>" --file "src/**" --file "!**/*.test.*"
 ```
 
