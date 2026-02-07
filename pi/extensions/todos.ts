@@ -1415,8 +1415,8 @@ async function deleteTodo(
 }
 
 export default function todosExtension(pi: ExtensionAPI) {
-	pi.on("session_start", async (_event, ctx) => {
-		const todosDir = getTodosDir(ctx.cwd);
+	pi.on("session_start", async (_event, _ctx) => {
+		const todosDir = getTodosDir(process.cwd());
 		await ensureTodosDir(todosDir);
 		const settings = await readTodoSettings(todosDir);
 		await garbageCollectTodos(todosDir, settings);
@@ -1434,8 +1434,8 @@ export default function todosExtension(pi: ExtensionAPI) {
 			"Claim tasks before working on them to avoid conflicts, and close them when complete.", 
 		parameters: TodoParams,
 
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const todosDir = getTodosDir(ctx.cwd);
+		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+			const todosDir = getTodosDir(process.cwd());
 			const action: TodoAction = params.action;
 
 			switch (action) {
@@ -1800,7 +1800,7 @@ export default function todosExtension(pi: ExtensionAPI) {
 			});
 		},
 		handler: async (args, ctx) => {
-			const todosDir = getTodosDir(ctx.cwd);
+			const todosDir = getTodosDir(process.cwd());
 			const todos = await listTodos(todosDir);
 			const currentSessionId = ctx.sessionManager.getSessionId();
 			const searchTerm = (args ?? "").trim();

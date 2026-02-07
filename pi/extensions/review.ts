@@ -896,7 +896,7 @@ export default function reviewExtension(pi: ExtensionAPI) {
 
 		const prompt = await buildReviewPrompt(pi, target);
 		const hint = getUserFacingHint(target);
-		const projectGuidelines = await loadProjectReviewGuidelines(ctx.cwd);
+		const projectGuidelines = await loadProjectReviewGuidelines(process.cwd());
 
 		// Combine the review rubric with the specific prompt
 		let fullPrompt = `${REVIEW_RUBRIC}\n\n---\n\nPlease perform a code review with the following focus:\n\n${prompt}`;
