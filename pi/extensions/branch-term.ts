@@ -10,11 +10,13 @@ function normalizeTerminalFlag(value: unknown): string | undefined {
 	return trimmed.length > 0 ? trimmed : undefined
 }
 
-function renderTerminalCommand(template: string, sessionFile: string): string {
-	if (template.includes("{session}")) {
-		return template.split("{session}").join(sessionFile)
+function renderTerminalCommand(template: string, sessionFile: string, cwd: string): string {
+	let command = template
+	command = command.split("{cwd}").join(cwd)
+	if (command.includes("{session}")) {
+		return command.split("{session}").join(sessionFile)
 	}
-	return `${template} ${sessionFile}`
+	return `${command} ${sessionFile}`
 }
 
 function spawnDetached(command: string, args: string[], onError?: (error: Error) => void): void {
@@ -60,7 +62,8 @@ function spawnGhosttySession(sessionFile: string, cwd: string, onError?: (error:
 
 export default function (pi: ExtensionAPI) {
 	pi.registerFlag(TERMINAL_FLAG, {
-		description: "Command to open a new terminal. Use {session} placeholder for the session file path.",
+		description:
+			"Command to open a new terminal. Use {session} for the session file path and {cwd} for the working directory.",
 		type: "string",
 	})
 
@@ -87,9 +90,11 @@ export default function (pi: ExtensionAPI) {
 				throw new Error("Failed to create branched session")
 			}
 
+			const cwd = process.cwd()
+
 			const terminalFlag = normalizeTerminalFlag(pi.getFlag(`--${TERMINAL_FLAG}`))
 			if (terminalFlag) {
-				const command = renderTerminalCommand(terminalFlag, forkFile)
+				const command = renderTerminalCommand(terminalFlag, forkFile, cwd)
 				spawnDetached("bash", ["-lc", command], (error) => {
 					if (ctx.hasUI) ctx.ui.notify(`Terminal command failed: ${error.message}`, "error")
 				})
@@ -98,7 +103,16 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			if (process.env.TMUX) {
-				const result = await pi.exec("tmux", ["new-window", "-n", "branch", "pi", "--session", forkFile])
+				const result = await pi.exec("tmux", [
+					"new-window",
+					"-c",
+					cwd,
+					"-n",
+					"branch",
+					"pi",
+					"--session",
+					forkFile,
+				])
 				if (result.code !== 0) {
 					throw new Error(result.stderr || result.stdout || "tmux new-window failed")
 				}
@@ -106,7 +120,7 @@ export default function (pi: ExtensionAPI) {
 				return
 			}
 
-			spawnGhosttySession(forkFile, ctx.cwd, (error) => {
+			spawnGhosttySession(forkFile, cwd, (error) => {
 				if (ctx.hasUI) {
 					ctx.ui.notify(`Ghostty failed to open: ${error.message}`, "warning")
 					ctx.ui.notify(`Run: pi --session ${forkFile}`, "info")

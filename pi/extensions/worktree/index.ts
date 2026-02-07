@@ -671,9 +671,9 @@ async function handleNew(pi: ExtensionAPI, ctx: ExtensionCommandContext, args: s
 
 		// Branch already checked out in a worktree
 		if (existing && existing.path !== repo.mainRoot) {
+			process.chdir(existing.path);
 			if (ctx.hasUI) {
 				ctx.ui.notify(`Branch ${branch} is already checked out at: ${existing.path}`, "info");
-				ctx.ui.setEditorText(`cd ${shellQuote(existing.path)}`);
 			}
 			return;
 		}
@@ -760,9 +760,10 @@ Continue?`,
 			throw new Error(`Failed to create worktree${details ? `\n${details}` : ""}`);
 		}
 
+		process.chdir(targetPath);
+
 		if (ctx.hasUI) {
 			ctx.ui.notify(`Worktree created: ${targetPath}`, "info");
-			ctx.ui.setEditorText(`cd ${shellQuote(targetPath)}`);
 		}
 
 		if (mainWorktreeSwitched && ctx.hasUI) {
