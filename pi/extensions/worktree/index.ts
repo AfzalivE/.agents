@@ -13,6 +13,12 @@
  *
  *  - /worktree list
  *      Lists worktrees and their status.
+ *
+ * Note on working directory:
+ *  /worktree new calls process.chdir() so the entire pi process moves into
+ *  the new worktree. pi's ctx.cwd is frozen at startup and won't reflect this
+ *  change. Any extension that needs the actual working directory after a
+ *  worktree switch must use process.cwd() instead of ctx.cwd.
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
