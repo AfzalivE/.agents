@@ -999,13 +999,15 @@ async function handleArchive(pi: ExtensionAPI, ctx: ExtensionCommandContext, arg
 	const tokens = tokenizeArgs(args);
 	let branch = tokens[0];
 	if (!branch || branch.startsWith("-")) {
-		if (ctx.hasUI) ctx.ui.notify("Usage: /worktree archive <branch>", "warning");
-		return;
+		if (!ctx.hasUI) return;
+		const input = await ctx.ui.input("Branch name");
+		if (!input) return;
+		branch = input.trim();
 	}
 
 	branch = stripRefsHeadsPrefix(branch);
 	if (!branch || branch.startsWith("-")) {
-		if (ctx.hasUI) ctx.ui.notify("Usage: /worktree archive <branch>", "warning");
+		if (ctx.hasUI) ctx.ui.notify("Invalid branch name", "warning");
 		return;
 	}
 
