@@ -637,16 +637,16 @@ async function handleNew(pi: ExtensionAPI, ctx: ExtensionCommandContext, args: s
 	const tokens = tokenizeArgs(args);
 	let branch = tokens[0];
 	if (!branch || branch.startsWith("-")) {
-		if (ctx.hasUI) {
-			ctx.ui.notify("Usage: /worktree new <branch> [--from <ref>]", "warning");
-		}
-		return;
+		if (!ctx.hasUI) return;
+		const input = await ctx.ui.input("Branch name");
+		if (!input) return;
+		branch = input.trim();
 	}
 
 	branch = stripRefsHeadsPrefix(branch);
 	if (!branch || branch.startsWith("-")) {
 		if (ctx.hasUI) {
-			ctx.ui.notify("Usage: /worktree new <branch> [--from <ref>]", "warning");
+			ctx.ui.notify("Invalid branch name", "warning");
 		}
 		return;
 	}
