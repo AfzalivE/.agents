@@ -28,6 +28,10 @@ import * as path from "node:path";
 const STATUS_KEY = "worktree";
 const FETCH_TIMEOUT_MS = 60_000;
 
+// fs.copyFileSync mode: attempt COW (reflink/clonefile) then fall back to regular
+// copy, and fail if the destination already exists (skip-on-exist for idempotency).
+const COPYFILE_COW_EXCL = fs.constants.COPYFILE_FICLONE | fs.constants.COPYFILE_EXCL;
+
 type Subcommand = "new" | "archive" | "clean" | "list";
 
 type DirtyAction = "skip" | "stash" | "force" | "prompt";
@@ -515,7 +519,206 @@ function inferSetupActions(worktreeRoot: string): SetupAction[] {
 	return actions;
 }
 
-async function maybeRunSetupFromProjectFiles(
+/**
+ * Parse a .worktreeinclude file into glob patterns suitable for path.matchesGlob().
+ *
+ * .worktreeinclude uses gitignore syntax. We implement a practical subset:
+ * - Blank lines and # comments are skipped
+ * - ! prefix negates a pattern
+ * - Trailing / marks directory-only patterns
+ * - Leading / anchors to the worktree root
+ * - Patterns without internal / match at any depth (prepend **​/)
+ *
+ * Full gitignore supports character classes ([a-z]), escaped characters, etc.
+ * This simplified parser covers the patterns seen in practice (.worktreeinclude
+ * files typically list build artifact directories like target/, node_modules/).
+ * Using path.matchesGlob() (built into Node 22) avoids external dependencies.
+ */
+function parseWorktreeIncludePatterns(content: string): Array<{ glob: string; negate: boolean }> {
+	return content
+		.split("\n")
+		.map((line) => line.trim())
+		.filter((line) => line && !line.startsWith("#"))
+		.map((pattern) => {
+			const negate = pattern.startsWith("!");
+			const raw = negate ? pattern.slice(1) : pattern;
+
+			let glob: string;
+			if (raw.startsWith("/")) {
+				// Leading / anchors to root — strip it (paths from ls-files are already root-relative)
+				glob = raw.slice(1);
+			} else {
+				// If no internal / (ignoring trailing /), match at any depth per gitignore spec
+				const withoutTrailing = raw.endsWith("/") ? raw.slice(0, -1) : raw;
+				if (!withoutTrailing.includes("/")) {
+					glob = `**/${raw}`;
+				} else {
+					glob = raw;
+				}
+			}
+			return { glob, negate };
+		});
+}
+
+function matchesWorktreeInclude(
+	entry: string,
+	patterns: Array<{ glob: string; negate: boolean }>,
+): boolean {
+	// Normalize trailing slashes: git ls-files --directory appends / to directories,
+	// and patterns may or may not have trailing /. Strip both for matching since
+	// --directory already ensures we only get directory entries for directory patterns.
+	const normalizedEntry = entry.replace(/\/$/, "");
+	let matched = false;
+	for (const { glob, negate } of patterns) {
+		const normalizedGlob = glob.replace(/\/$/, "");
+		if (path.matchesGlob(normalizedEntry, normalizedGlob)) {
+			matched = !negate;
+		}
+	}
+	return matched;
+}
+
+/**
+ * Recursively copy a directory using per-file COW (reflink/clonefile) where the
+ * filesystem supports it, falling back to regular copy otherwise. Existing files
+ * are silently skipped for idempotent re-runs.
+ *
+ * This matches worktrunk's copy_dir_recursive: per-file reflink spreads I/O
+ * operations over time rather than issuing them in a single burst (macOS
+ * clonefile on large directories can saturate disk I/O and block interactive
+ * processes). Symlinks are preserved (re-created, not followed).
+ */
+function copyDirRecursive(src: string, dest: string): void {
+	fs.mkdirSync(dest, { recursive: true });
+
+	for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+		const srcPath = path.join(src, entry.name);
+		const destPath = path.join(dest, entry.name);
+
+		if (entry.isSymbolicLink()) {
+			try {
+				const target = fs.readlinkSync(srcPath);
+				fs.symlinkSync(target, destPath);
+			} catch (err) {
+				if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+			}
+		} else if (entry.isDirectory()) {
+			copyDirRecursive(srcPath, destPath);
+		} else {
+			try {
+				fs.copyFileSync(srcPath, destPath, COPYFILE_COW_EXCL);
+			} catch (err) {
+				if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+			}
+		}
+	}
+}
+
+async function applyWorktreeInclude(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	sourceRoot: string,
+	destRoot: string,
+	worktrees: WorktreeInfo[],
+): Promise<void> {
+	if (!ctx.hasUI) return;
+
+	const includeFile = path.join(sourceRoot, ".worktreeinclude");
+	if (!isFile(includeFile)) return;
+
+	let content: string;
+	try {
+		content = fs.readFileSync(includeFile, "utf8");
+	} catch {
+		return;
+	}
+
+	const patterns = parseWorktreeIncludePatterns(content);
+	if (patterns.length === 0) return;
+
+	// List gitignored entries in the source worktree.
+	// --directory stops at directory boundaries (avoids listing thousands of files in target/).
+	const lsResult = await git(pi, sourceRoot, [
+		"ls-files", "--ignored", "--exclude-standard", "-o", "--directory", "--no-empty-directory",
+	]);
+	if (lsResult.code !== 0) return;
+
+	const ignoredEntries = lsResult.stdout
+		.split("\n")
+		.map((line) => line.trim())
+		.filter(Boolean);
+
+	// Filter to entries matching .worktreeinclude patterns.
+	let entriesToCopy = ignoredEntries.filter((entry) => matchesWorktreeInclude(entry, patterns));
+
+	// Exclude entries that contain other worktrees (prevents recursive copying when
+	// worktrees are nested inside the source, e.g., worktree-path = ".worktrees/...").
+	const worktreePaths = worktrees.map((wt) => realpathOrResolve(wt.path));
+	const sourceRealpath = realpathOrResolve(sourceRoot);
+	entriesToCopy = entriesToCopy.filter((entry) => {
+		const entryAbs = realpathOrResolve(path.join(sourceRoot, entry.replace(/\/$/, "")));
+		return !worktreePaths.some(
+			(wtPath) => wtPath !== sourceRealpath && isSameOrInsidePath(wtPath, entryAbs),
+		);
+	});
+
+	if (entriesToCopy.length === 0) return;
+
+	const listing = entriesToCopy.map((e) => `  ${e}`).join("\n");
+	const ok = await ctx.ui.confirm(
+		"Copy cached files from main worktree?",
+		`Found .worktreeinclude. Copy these gitignored entries:\n\n${listing}`,
+	);
+	if (!ok) return;
+
+	await withStatus(ctx, "Copying cached files", async () => {
+		for (const entry of entriesToCopy) {
+			const src = path.join(sourceRoot, entry.replace(/\/$/, ""));
+			const dest = path.join(destRoot, entry.replace(/\/$/, ""));
+
+			// Validate paths stay within their respective roots (defense against
+			// crafted .gitignore + .worktreeinclude producing ../ components).
+			if (!isSameOrInsidePath(src, sourceRoot) || !isSameOrInsidePath(dest, destRoot)) continue;
+
+			if (!fs.existsSync(src)) continue;
+
+			try {
+				const srcStat = fs.lstatSync(src);
+				if (srcStat.isDirectory()) {
+					copyDirRecursive(src, dest);
+				} else if (srcStat.isSymbolicLink()) {
+					const target = fs.readlinkSync(src);
+					const destParent = path.dirname(dest);
+					if (!fs.existsSync(destParent)) {
+						fs.mkdirSync(destParent, { recursive: true });
+					}
+					try {
+						fs.symlinkSync(target, dest);
+					} catch (err) {
+						if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+					}
+				} else {
+					const destParent = path.dirname(dest);
+					if (!fs.existsSync(destParent)) {
+						fs.mkdirSync(destParent, { recursive: true });
+					}
+					try {
+						fs.copyFileSync(src, dest, COPYFILE_COW_EXCL);
+					} catch (err) {
+						if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+					}
+				}
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				ctx.ui.notify(`Failed to copy ${entry}: ${message}`, "warning");
+			}
+		}
+	});
+
+	ctx.ui.notify("Cached files copied", "info");
+}
+
+async function applySetupFromProjectFiles(
 	pi: ExtensionAPI,
 	ctx: ExtensionCommandContext,
 	worktreeRoot: string,
@@ -803,7 +1006,12 @@ Continue?`,
 			}
 		}
 
-		await maybeRunSetupFromProjectFiles(pi, ctx, targetPath);
+		// Copy cached build artifacts from the main worktree (the long-lived worktree
+		// most likely to have warm caches). This matches worktrunk's default behavior
+		// of always copying from the primary worktree.
+		const currentWorktrees = await listWorktrees(pi, repo.mainRoot);
+		await applyWorktreeInclude(pi, ctx, repo.mainRoot, targetPath, currentWorktrees);
+		await applySetupFromProjectFiles(pi, ctx, targetPath);
 	});
 }
 
