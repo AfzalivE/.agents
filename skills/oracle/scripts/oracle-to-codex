@@ -6,7 +6,7 @@ ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 
 "${SCRIPT_DIR}/oracle-bundle" "$@" \
   | codex exec \
-      -m gpt-5.2 \
+      -m gpt-5.3-codex \
       -c 'model_reasoning_effort="xhigh"' \
       -c 'approval_policy="never"' \
       -c 'sandbox_mode="read-only"' \

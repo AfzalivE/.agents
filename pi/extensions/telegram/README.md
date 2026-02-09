@@ -1,4 +1,4 @@
-# pi-telegram (prototype)
+# telegram (prototype)
 
 A pi extension + local daemon that lets you interact with pi via a Telegram bot.
 
@@ -7,7 +7,7 @@ A pi extension + local daemon that lets you interact with pi via a Telegram bot.
 Dependencies:
 
 ```bash
-cd "$HOME/.agents/pi/extensions/pi-telegram"
+cd "$HOME/.agents/pi/extensions/telegram"
 npm install
 ```
 
@@ -15,7 +15,7 @@ npm install
 
 Stored at:
 
-- `~/.pi/agent/pi-telegram/config.json`
+- `~/.pi/agent/telegram/config.json`
 
 Example:
 

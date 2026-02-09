@@ -8,8 +8,8 @@ import TelegramBot from "node-telegram-bot-api";
 
 const AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
 const RUN_DIR = path.join(AGENT_DIR, "run");
-const SOCKET_PATH = path.join(RUN_DIR, "pi-telegram.sock");
-const CONFIG_DIR = path.join(AGENT_DIR, "pi-telegram");
+const SOCKET_PATH = path.join(RUN_DIR, "telegram.sock");
+const CONFIG_DIR = path.join(AGENT_DIR, "telegram");
 const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
 
 async function loadConfig() {
@@ -58,7 +58,7 @@ function chunkText(text, max = 3500) {
 
 let config = await loadConfig();
 if (!config || !config.botToken) {
-  console.error(`[pi-telegram] Missing botToken in ${CONFIG_PATH}.`);
+  console.error(`[telegram] Missing botToken in ${CONFIG_PATH}.`);
   process.exit(1);
 }
 
@@ -273,7 +273,7 @@ async function handleTelegramMessage(msg) {
   if (text === "/help") {
     await botSend(
       chatId,
-      "pi-telegram commands:\n/windows - list windows\n/window N - switch active window\n/unpair - disconnect active window\n/esc - abort current agent run in active window\n/steer <msg> - interrupt (steer) active window\n(plain text) - send to active window (queued as follow-up if busy)\n",
+      "telegram commands:\n/windows - list windows\n/window N - switch active window\n/unpair - disconnect active window\n/esc - abort current agent run in active window\n/steer <msg> - interrupt (steer) active window\n(plain text) - send to active window (queued as follow-up if busy)\n",
     );
     return;
   }
@@ -351,7 +351,7 @@ async function maybeShutdownSoon(server) {
   shutdownTimer = setTimeout(async () => {
     shutdownTimer = null;
     if (windows.size > 0) return;
-    console.error("[pi-telegram] No clients connected, shutting down.");
+    console.error("[telegram] No clients connected, shutting down.");
     stopTypingIndicator();
     try {
       await bot?.stopPolling();
@@ -386,7 +386,7 @@ async function startServer() {
       s.on("error", () => resolve(false));
     });
     if (ok) {
-      console.error("[pi-telegram] Daemon already running.");
+      console.error("[telegram] Daemon already running.");
       process.exit(0);
     }
     try {
@@ -551,7 +551,7 @@ const server = await startServer();
 // Start bot polling only after we've acquired the single-instance socket.
 bot = new TelegramBot(config.botToken, { polling: true });
 bot.on("message", (msg) => {
-  handleTelegramMessage(msg).catch((e) => console.error("[pi-telegram] telegram handler error", e));
+  handleTelegramMessage(msg).catch((e) => console.error("[telegram] telegram handler error", e));
 });
 updateTypingIndicator();
 
@@ -569,4 +569,4 @@ process.on("SIGINT", async () => {
   process.exit(0);
 });
 
-console.error(`[pi-telegram] Daemon running. Socket: ${SOCKET_PATH}`);
+console.error(`[telegram] Daemon running. Socket: ${SOCKET_PATH}`);
