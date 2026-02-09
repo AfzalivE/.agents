@@ -188,7 +188,7 @@ export default function (pi: ExtensionAPI) {
     const sessionName = pi.getSessionName() ?? undefined;
     send({
       type: "meta",
-      cwd: process.cwd(),
+      cwd: ctx.cwd,
       sessionName,
       busy: state.busy,
     });
@@ -228,7 +228,7 @@ export default function (pi: ExtensionAPI) {
     jsonlWrite(socket, {
       type: "register",
       windowId: state.windowId,
-      cwd: process.cwd(),
+      cwd: ctx.cwd,
       sessionName: pi.getSessionName() ?? undefined,
       busy: state.busy,
     });
