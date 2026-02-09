@@ -13,15 +13,12 @@
  *
  *  - /worktree list
  *      Lists worktrees and their status.
- *
- * Note on working directory:
- *  /worktree new calls process.chdir() so the entire pi process moves into
- *  the new worktree. pi's ctx.cwd is frozen at startup and won't reflect this
- *  change. Any extension that needs the actual working directory after a
- *  worktree switch must use process.cwd() instead of ctx.cwd.
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import { DynamicBorder } from "@mariozechner/pi-coding-agent";
+import { Container, type SelectItem, SelectList, Text, matchesKey } from "@mariozechner/pi-tui";
+import { spawn, execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -836,6 +833,100 @@ async function maybeSwitchMainToDefaultBranch(
 	return { proceed: true, switched: true, stashedHash };
 }
 
+function spawnDetached(command: string, args: string[], onError?: (error: Error) => void): void {
+	const child = spawn(command, args, { detached: true, stdio: "ignore" });
+	child.unref();
+	if (onError) child.on("error", onError);
+}
+
+function ghosttyAvailable(): boolean {
+	if (process.platform === "darwin") {
+		return (
+			fs.existsSync("/Applications/Ghostty.app") ||
+			fs.existsSync(`${process.env.HOME}/Applications/Ghostty.app`)
+		);
+	}
+	try {
+		execFileSync("which", ["ghostty"], { stdio: "ignore" });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function spawnGhosttyFresh(cwd: string, onError?: (error: Error) => void): void {
+	const piCommand = "exec pi";
+
+	if (process.platform === "darwin") {
+		const envPath = process.env.PATH;
+		const args: string[] = ["-n", "-a", "Ghostty"];
+
+		if (envPath) {
+			args.push("--env", `PATH=${envPath}`);
+		}
+
+		args.push(
+			"--args",
+			"-e",
+			"bash",
+			"-lc",
+			`cd "$1" && ${piCommand}`,
+			"--",
+			cwd,
+		);
+
+		spawnDetached("open", args, onError);
+		return;
+	}
+
+	spawnDetached(
+		"ghostty",
+		["-e", "bash", "-lc", `cd "$1" && ${piCommand}`, "--", cwd],
+		onError,
+	);
+}
+
+async function openSessionInDirectory(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	targetPath: string,
+): Promise<void> {
+	if (!ctx.hasUI) return;
+
+	const manualHint = `cd ${shellQuote(targetPath)} && pi`;
+
+	if (process.env.TMUX) {
+		const result = await pi.exec("tmux", [
+			"new-window",
+			"-c",
+			targetPath,
+			"-n",
+			"pi",
+			"pi",
+		]);
+		if (result.code !== 0) {
+			ctx.ui.notify(`tmux failed: ${result.stderr || result.stdout || "unknown error"}`, "warning");
+			ctx.ui.notify(`Run manually: ${manualHint}`, "info");
+			return;
+		}
+		ctx.ui.notify("Opened new session in tmux window", "info");
+		return;
+	}
+
+	if (ghosttyAvailable()) {
+		spawnGhosttyFresh(targetPath, (error) => {
+			if (ctx.hasUI) {
+				ctx.ui.notify(`Ghostty failed to open: ${error.message}`, "warning");
+				ctx.ui.notify(`Run manually: ${manualHint}`, "info");
+			}
+		});
+		ctx.ui.notify("Opened new session in Ghostty window", "info");
+		return;
+	}
+
+	ctx.ui.notify(`Open a new session: ${manualHint}`, "info");
+}
+
 async function handleNew(pi: ExtensionAPI, ctx: ExtensionCommandContext, args: string): Promise<void> {
 	const tokens = tokenizeArgs(args);
 	let branch = tokens[0];
@@ -880,10 +971,10 @@ async function handleNew(pi: ExtensionAPI, ctx: ExtensionCommandContext, args: s
 
 		// Branch already checked out in a worktree
 		if (existing && existing.path !== repo.mainRoot) {
-			process.chdir(existing.path);
 			if (ctx.hasUI) {
 				ctx.ui.notify(`Branch ${branch} is already checked out at: ${existing.path}`, "info");
 			}
+			await openSessionInDirectory(pi, ctx, existing.path);
 			return;
 		}
 
@@ -969,8 +1060,6 @@ Continue?`,
 			throw new Error(`Failed to create worktree${details ? `\n${details}` : ""}`);
 		}
 
-		process.chdir(targetPath);
-
 		if (ctx.hasUI) {
 			ctx.ui.notify(`Worktree created: ${targetPath}`, "info");
 		}
@@ -1012,6 +1101,8 @@ Continue?`,
 		const currentWorktrees = await listWorktrees(pi, repo.mainRoot);
 		await applyWorktreeInclude(pi, ctx, repo.mainRoot, targetPath, currentWorktrees);
 		await applySetupFromProjectFiles(pi, ctx, targetPath);
+
+		await openSessionInDirectory(pi, ctx, targetPath);
 	});
 }
 
@@ -1329,15 +1420,8 @@ async function handleClean(pi: ExtensionAPI, ctx: ExtensionCommandContext): Prom
 				return;
 			}
 
-			const lines = [
-				"Archived worktrees: 0",
-				"",
-				`Skipped: ${locked.length}`,
-				...locked.map((o) => `- ${o.branch} -> ${o.worktreePath} (${o.skippedReason ?? "unknown"})`),
-			];
-
-			ctx.ui.notify("No removable pushed worktrees (some are locked)", "warning");
-			await ctx.ui.editor("Worktree clean results", lines.join("\n"));
+			const lockedList = locked.map((o) => `${o.branch} (${o.skippedReason ?? "unknown"})`).join(", ");
+			ctx.ui.notify(`No removable pushed worktrees. Locked: ${lockedList}`, "warning");
 			return;
 		}
 
@@ -1382,76 +1466,196 @@ async function handleClean(pi: ExtensionAPI, ctx: ExtensionCommandContext): Prom
 			else skipped.push(outcome);
 		}
 
-		const lines: string[] = [];
-		lines.push(`Archived worktrees: ${archived.length}`);
-		for (const o of archived) {
-			lines.push(`- ${o.branch} -> ${o.worktreePath}${o.branchDeleted ? " (branch deleted)" : ""}`);
-		}
-
-		if (skipped.length > 0) {
-			lines.push("");
-			lines.push(`Skipped: ${skipped.length}`);
-			for (const o of skipped) {
-				lines.push(`- ${o.branch} -> ${o.worktreePath || "(unknown)"} (${o.skippedReason ?? "unknown"})`);
-			}
-		}
-
 		if (ctx.hasUI) {
-			ctx.ui.notify(`Archived ${archived.length} worktree(s)`, "info");
-			await ctx.ui.editor("Worktree clean results", lines.join("\n"));
+			const parts = [`Archived ${archived.length} worktree(s)`];
+			if (skipped.length > 0) {
+				const skippedList = skipped.map((o) => `${o.branch} (${o.skippedReason ?? "unknown"})`).join(", ");
+				parts.push(`Skipped ${skipped.length}: ${skippedList}`);
+			}
+			ctx.ui.notify(parts.join(". "), archived.length > 0 ? "info" : "warning");
 		}
 	});
+}
+
+interface WorktreeDisplayItem {
+	wt: WorktreeInfo;
+	branch: string;
+	isCurrent: boolean;
+	isMain: boolean;
+	status: DirtyState;
+	pathState: WorktreePathState;
+	tracked: boolean;
+}
+
+async function gatherWorktreeDisplayItems(
+	pi: ExtensionAPI,
+	repo: RepoInfo,
+	worktrees: WorktreeInfo[],
+): Promise<WorktreeDisplayItem[]> {
+	const currentReal = realpathOrResolve(repo.currentRoot);
+	const mainReal = realpathOrResolve(repo.mainRoot);
+	const items: WorktreeDisplayItem[] = [];
+
+	for (const wt of worktrees) {
+		const wtReal = realpathOrResolve(wt.path);
+		const isCurrent = wtReal === currentReal;
+		const isMain = wtReal === mainReal;
+
+		let branch = "unknown";
+		let tracked = false;
+		if (wt.branchRef) {
+			branch = branchNameFromRef(wt.branchRef);
+			tracked = (await getUpstream(pi, repo.mainRoot, branch)) !== null;
+		} else if (wt.detached) {
+			branch = wt.head ? `detached@${wt.head.slice(0, 7)}` : "detached";
+		}
+
+		const pathState = getWorktreePathState(wt.path);
+		const status = pathState === "ok" ? await getDirtyState(pi, wt.path) : "unknown";
+
+		items.push({ wt, branch, isCurrent, isMain, status, pathState, tracked });
+	}
+
+	return items;
+}
+
+function collapsePath(p: string): string {
+	const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
+	if (home && p.startsWith(home)) return "~" + p.slice(home.length);
+	return p;
+}
+
+function formatWorktreeLabel(item: WorktreeDisplayItem, theme: { fg: (c: string, t: string) => string; bold: (t: string) => string }): string {
+	const parts: string[] = [];
+
+	// Branch name: green + bold for current, plain for others (like git branch).
+	// Dirty marker after name (git-style): branch* for dirty, branch for clean.
+	const dirty = item.status === "dirty" ? " *" : "";
+	const name = `${item.branch}${dirty}`;
+	parts.push(item.isCurrent ? theme.fg("success", theme.bold(name)) : name);
+
+	// Tracking.
+	if (item.tracked) {
+		parts.push(theme.fg("dim", "↑"));
+	}
+
+	// Tags.
+	if (item.isMain) {
+		parts.push(theme.fg("muted", "[primary]"));
+	}
+	if (item.wt.locked) {
+		parts.push(theme.fg("error", item.wt.lockedReason ? `locked: ${item.wt.lockedReason}` : "locked"));
+	}
+	if (item.pathState !== "ok") {
+		parts.push(theme.fg("error", item.pathState));
+	}
+
+	// Path last — truncates naturally when terminal is narrow.
+	parts.push(theme.fg("dim", collapsePath(item.wt.path)));
+
+	return parts.join("  ");
 }
 
 async function handleList(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
 	await ctx.waitForIdle();
 
-	await withStatus(ctx, "Listing worktrees", async () => {
-		const repo = await getRepoInfo(pi, ctx.cwd);
+	if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, "Listing worktrees");
+	let repo: RepoInfo;
+	let items: WorktreeDisplayItem[];
+	try {
+		repo = await getRepoInfo(pi, ctx.cwd);
 		const worktrees = await listWorktrees(pi, repo.mainRoot);
+		items = await gatherWorktreeDisplayItems(pi, repo, worktrees);
+	} finally {
+		if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
+	}
 
-		const currentReal = realpathOrResolve(repo.currentRoot);
-		const mainReal = realpathOrResolve(repo.mainRoot);
-
-		const lines: string[] = [];
-		lines.push(`Worktrees: ${worktrees.length}`);
-		lines.push("");
-
-		for (const wt of worktrees) {
-			const wtReal = realpathOrResolve(wt.path);
-			const isCurrent = wtReal === currentReal;
-			const isMain = wtReal === mainReal;
-			const marker = isCurrent ? "*" : " ";
-
-			let branchLabel = "unknown";
-			let upstream: string | null = null;
-
-			if (wt.branchRef) {
-				const branch = branchNameFromRef(wt.branchRef);
-				branchLabel = branch;
-				upstream = await getUpstream(pi, repo.mainRoot, branch);
-			} else if (wt.detached) {
-				branchLabel = wt.head ? `detached@${wt.head.slice(0, 7)}` : "detached";
-			}
-
-			const pathState = getWorktreePathState(wt.path);
-			const status = pathState === "ok" ? await getDirtyState(pi, wt.path) : "unknown";
-
-			const meta: string[] = [status];
-			if (pathState !== "ok") meta.push(pathState);
-			if (upstream) meta.push(`upstream:${upstream}`);
-			if (wt.locked) meta.push(wt.lockedReason ? `locked:${wt.lockedReason}` : "locked");
-
-			lines.push(`${marker} ${branchLabel} (${meta.join(", ")})${isMain ? " [main]" : ""}`);
-			lines.push(`    ${wt.path}`);
+	if (!ctx.hasUI) {
+		for (const item of items) {
+			const dirty = item.status === "dirty" ? " *" : "";
+			const meta: string[] = [];
+			if (item.tracked) meta.push("↑");
+			if (item.isMain) meta.push("[primary]");
+			if (item.pathState !== "ok") meta.push(item.pathState);
+			if (item.wt.locked) meta.push(item.wt.lockedReason ? `locked:${item.wt.lockedReason}` : "locked");
+			const suffix = meta.length > 0 ? `  ${meta.join("  ")}` : "";
+			console.log(`  ${item.branch}${dirty}${suffix}  ${collapsePath(item.wt.path)}`);
 		}
+		return;
+	}
 
-		if (ctx.hasUI) {
-			await ctx.ui.editor("Worktrees", lines.join("\n"));
-		} else {
-			console.log(lines.join("\n"));
-		}
+	const theme = ctx.ui.theme;
+
+	const selectItems: SelectItem[] = items.map((item) => ({
+		value: item.branch,
+		label: formatWorktreeLabel(item, theme),
+	}));
+
+	const itemByValue = new Map(items.map((item) => [item.branch, item]));
+
+	type ListResult = { action: "open" | "archive"; item: WorktreeDisplayItem } | null;
+
+	const result = await ctx.ui.custom<ListResult>((tui, theme, _kb, done) => {
+		const container = new Container();
+		container.addChild(new DynamicBorder((s: string) => theme.fg("borderMuted", s)));
+
+		const selectList = new SelectList(selectItems, Math.min(selectItems.length, 15), {
+			selectedPrefix: (t) => theme.fg("accent", t),
+			selectedText: (t) => theme.fg("accent", t),
+			description: (t) => t,
+			scrollInfo: (t) => theme.fg("dim", t),
+			noMatch: (t) => theme.fg("warning", t),
+		});
+		selectList.onSelect = (si) => {
+			const item = itemByValue.get(si.value);
+			if (item) done({ action: "open", item });
+			else done(null);
+		};
+		selectList.onCancel = () => done(null);
+		container.addChild(selectList);
+
+		container.addChild(new Text(
+			theme.fg("dim", " ↑↓ navigate  enter open  a archive  esc close"),
+			0, 0,
+		));
+		container.addChild(new DynamicBorder((s: string) => theme.fg("borderMuted", s)));
+
+		return {
+			render: (w) => container.render(w),
+			invalidate: () => container.invalidate(),
+			handleInput: (data) => {
+				if (matchesKey(data, "a")) {
+					const si = selectList.getSelectedItem();
+					if (si) {
+						const item = itemByValue.get(si.value);
+						if (item) {
+							done({ action: "archive", item });
+							return;
+						}
+					}
+				}
+				selectList.handleInput(data);
+				tui.requestRender();
+			},
+		};
 	});
+
+	if (!result) return;
+
+	if (result.action === "open") {
+		const currentReal = realpathOrResolve(repo.currentRoot);
+		if (realpathOrResolve(result.item.wt.path) === currentReal) {
+			ctx.ui.notify("Already in this worktree", "info");
+			return;
+		}
+		await openSessionInDirectory(pi, ctx, result.item.wt.path);
+		return;
+	}
+
+	if (result.action === "archive") {
+		const defaultMain = await getDefaultMainBranch(pi, repo.mainRoot);
+		await archiveWorktree(pi, ctx, repo, result.item.branch, "prompt", defaultMain);
+	}
 }
 
 function parseSubcommand(args: string): { subcommand: Subcommand | null; rest: string } {
