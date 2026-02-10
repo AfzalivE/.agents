@@ -1370,7 +1370,7 @@ async function handleArchive(pi: ExtensionAPI, ctx: ExtensionCommandContext, arg
 
 	await ctx.waitForIdle();
 
-	await withStatus(ctx, `Archiving worktree: ${branch}`, async () => {
+	await withStatus(ctx, `Archiving ${branch}`, async () => {
 		const repo = await getRepoInfo(pi, ctx.cwd);
 		const defaultMain = await getDefaultMainBranch(pi, repo.mainRoot);
 
@@ -1617,16 +1617,12 @@ function formatWorktreeLabel(item: WorktreeDisplayItem, theme: { fg: (c: string,
 async function handleList(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
 	await ctx.waitForIdle();
 
-	if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, "Listing worktrees");
-	let repo: RepoInfo;
-	let items: WorktreeDisplayItem[];
-	try {
-		repo = await getRepoInfo(pi, ctx.cwd);
+	const { repo, items } = await withStatus(ctx, "Listing worktrees", async () => {
+		const repo = await getRepoInfo(pi, ctx.cwd);
 		const worktrees = await listWorktrees(pi, repo.mainRoot);
-		items = await gatherWorktreeDisplayItems(pi, repo, worktrees);
-	} finally {
-		if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
-	}
+		const items = await gatherWorktreeDisplayItems(pi, repo, worktrees);
+		return { repo, items };
+	});
 
 	if (!ctx.hasUI) {
 		for (const item of items) {
@@ -1711,8 +1707,10 @@ async function handleList(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promi
 	}
 
 	if (result.action === "archive") {
-		const defaultMain = await getDefaultMainBranch(pi, repo.mainRoot);
-		await archiveWorktree(pi, ctx, repo, result.item.branch, "prompt", defaultMain);
+		await withStatus(ctx, `Archiving ${result.item.branch}`, async () => {
+			const defaultMain = await getDefaultMainBranch(pi, repo.mainRoot);
+			await archiveWorktree(pi, ctx, repo, result.item.branch, "prompt", defaultMain, result.item.wt);
+		});
 	}
 }
 
