@@ -24,6 +24,8 @@ import * as path from "node:path";
 
 const STATUS_KEY = "worktree";
 const FETCH_TIMEOUT_MS = 60_000;
+const STATUS_SPINNER_INTERVAL_MS = 80;
+const STATUS_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 // fs.copyFileSync mode: attempt COW (reflink/clonefile) then fall back to regular
 // copy, and fail if the destination already exists (skip-on-exist for idempotency).
@@ -121,6 +123,51 @@ async function withStatus<T>(ctx: ExtensionCommandContext, text: string, fn: () 
 		return await fn();
 	} finally {
 		if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
+	}
+}
+
+function formatPhaseScriptStatus(
+	verb: "Running" | "Finished",
+	phase: "setup" | "archive",
+	label: string,
+): string {
+	const suffix = ` ${phase}`;
+	if (label.toLowerCase().endsWith(suffix)) {
+		const source = label.slice(0, -suffix.length).trim();
+		if (source.length > 0) {
+			return `${verb} ${phase} for ${source}`;
+		}
+	}
+	return `${verb} ${label}`;
+}
+
+function formatRunningScriptStatus(phase: "setup" | "archive", label: string): string {
+	return formatPhaseScriptStatus("Running", phase, label);
+}
+
+function formatFinishedScriptStatus(phase: "setup" | "archive", label: string): string {
+	return formatPhaseScriptStatus("Finished", phase, label);
+}
+
+async function withSpinnerStatus<T>(ctx: ExtensionCommandContext, text: string, fn: () => Promise<T>): Promise<T> {
+	if (!ctx.hasUI) return fn();
+
+	let frame = 0;
+	const render = () => {
+		ctx.ui.setStatus(STATUS_KEY, `${STATUS_SPINNER_FRAMES[frame]} ${text}`);
+	};
+
+	render();
+	const timer = setInterval(() => {
+		frame = (frame + 1) % STATUS_SPINNER_FRAMES.length;
+		render();
+	}, STATUS_SPINNER_INTERVAL_MS);
+
+	try {
+		return await fn();
+	} finally {
+		clearInterval(timer);
+		ctx.ui.setStatus(STATUS_KEY, undefined);
 	}
 }
 
@@ -806,8 +853,9 @@ async function runProjectScripts(
 	}
 
 	const label = phase[0].toUpperCase() + phase.slice(1);
+	const statusText = formatRunningScriptStatus(phase, chosen.label);
 
-	await withStatus(ctx, `Running ${phase}: ${chosen.label}`, async () => {
+	await withSpinnerStatus(ctx, statusText, async () => {
 		const result = await pi.exec("bash", ["-c", chosen.command], { cwd: worktreeRoot });
 		if (result.code !== 0) {
 			throw new Error(
@@ -816,7 +864,7 @@ async function runProjectScripts(
 		}
 	});
 
-	ctx.ui.notify(`${label} finished: ${chosen.label}`, "info");
+	ctx.ui.notify(formatFinishedScriptStatus(phase, chosen.label), "info");
 }
 
 async function ensureCanPrompt(ctx: ExtensionCommandContext, message: string): Promise<boolean> {
