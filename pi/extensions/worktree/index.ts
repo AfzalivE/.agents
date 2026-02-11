@@ -23,7 +23,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 const STATUS_KEY = "worktree";
-const TERMINAL_FLAG = "terminal";
+const TERMINAL_FLAG = "worktree-term";
 const FETCH_TIMEOUT_MS = 60_000;
 const STATUS_SPINNER_INTERVAL_MS = 80;
 const STATUS_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];

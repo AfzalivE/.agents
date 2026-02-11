@@ -3,7 +3,7 @@ import * as fs from "node:fs"
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent"
 import { SessionManager } from "@mariozechner/pi-coding-agent"
 
-const TERMINAL_FLAG = "terminal"
+const TERMINAL_FLAG = "branch-term"
 
 function getTerminalFlag(pi: ExtensionAPI): string | undefined {
 	const value = pi.getFlag(`--${TERMINAL_FLAG}`)
