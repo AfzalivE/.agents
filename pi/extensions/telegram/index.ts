@@ -479,19 +479,16 @@ export default function (pi: ExtensionAPI) {
           ctx.ui.setStatus("telegram", undefined);
           ctx.ui.setWidget("telegram", undefined);
         }
-        notify("Disconnected (this window removed from Telegram /windows).", "info");
+        notify("Disconnected this window (pairing remains; removed from Telegram /windows).", "info");
         return;
       }
 
       if (sub === "unpair") {
         const cfg = await loadConfig();
-        if (!cfg.botToken) {
-          notify(`No bot token configured. Run /telegram pair first or edit ${CONFIG_PATH}.`, "error");
-          return;
+        if (cfg.pairedChatId !== undefined) {
+          delete cfg.pairedChatId;
+          await saveConfig(cfg);
         }
-
-        delete cfg.pairedChatId;
-        await saveConfig(cfg);
 
         if (await canConnectSocket()) {
           try {
@@ -501,7 +498,14 @@ export default function (pi: ExtensionAPI) {
           }
         }
 
-        notify("Unpaired. Next /telegram pair will show a new PIN.", "info");
+        disconnect();
+
+        if (ctx.hasUI) {
+          ctx.ui.setStatus("telegram", undefined);
+          ctx.ui.setWidget("telegram", undefined);
+        }
+
+        notify("Unpaired and disconnected this window. Next /telegram pair will show a new PIN.", "info");
         return;
       }
 
@@ -535,6 +539,9 @@ export default function (pi: ExtensionAPI) {
         }
 
         updateMeta(ctx);
+        if (ctx.hasUI && state.windowNo !== null) {
+          ctx.ui.setStatus("telegram", `telegram: connected (window ${state.windowNo})`);
+        }
 
         const freshCfg = await loadConfig();
         if (!freshCfg.pairedChatId) {

@@ -44,13 +44,13 @@ First time:
 /telegram status
 ```
 
-- Unpair (clears paired chat id):
+- Unpair (clears paired chat id and disconnects this pi window):
 
 ```text
 /telegram unpair
 ```
 
-- Disconnect this pi window (removes it from Telegram `/windows`):
+- Disconnect this pi window only (keeps pairing, removes it from Telegram `/windows`):
 
 ```text
 /telegram stop
