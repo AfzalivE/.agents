@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import { BorderedLoader, type ExtensionAPI, type ExtensionContext, type ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -34,8 +34,78 @@ const SOCKET_PATH = path.join(RUN_DIR, "telegram.sock");
 const CONFIG_DIR = path.join(AGENT_DIR, "telegram");
 const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
 
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
+function sleep(ms: number, signal?: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+
+    const onAbort = () => {
+      clearTimeout(timer);
+      cleanup();
+      reject(new Error("Cancelled"));
+    };
+
+    const cleanup = () => {
+      signal?.removeEventListener("abort", onAbort);
+    };
+
+    if (!signal) return;
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+  if (signal?.aborted) {
+    throw new Error("Cancelled");
+  }
+}
+
+async function runWithLoader<T>(
+  ctx: ExtensionContext,
+  message: string,
+  task: (signal: AbortSignal) => Promise<T>,
+): Promise<{ cancelled: boolean; value?: T; error?: string }> {
+  if (!ctx.hasUI) {
+    const controller = new AbortController();
+    try {
+      const value = await task(controller.signal);
+      return { cancelled: false, value };
+    } catch (error) {
+      return {
+        cancelled: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  const result = await ctx.ui.custom<{ cancelled: boolean; value?: T; error?: string }>((tui, theme, _kb, done) => {
+    const loader = new BorderedLoader(tui, theme, message);
+    let settled = false;
+    const finish = (value: { cancelled: boolean; value?: T; error?: string }) => {
+      if (settled) return;
+      settled = true;
+      done(value);
+    };
+
+    loader.onAbort = () => finish({ cancelled: true });
+
+    task(loader.signal)
+      .then((value) => finish({ cancelled: false, value }))
+      .catch((error) => {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        finish({ cancelled: false, error: errorMessage });
+      });
+
+    return loader;
+  });
+
+  return result;
 }
 
 async function loadConfig(): Promise<Config> {
@@ -114,9 +184,11 @@ async function canConnectSocket(): Promise<boolean> {
   });
 }
 
-async function ensureDaemonRunning(daemonPath: string): Promise<void> {
+async function ensureDaemonRunning(daemonPath: string, signal?: AbortSignal): Promise<void> {
+  throwIfAborted(signal);
   await fsp.mkdir(RUN_DIR, { recursive: true, mode: 0o700 });
 
+  throwIfAborted(signal);
   if (await canConnectSocket()) return;
 
   const child = spawn(process.execPath, [daemonPath], {
@@ -127,8 +199,9 @@ async function ensureDaemonRunning(daemonPath: string): Promise<void> {
   child.unref();
 
   for (let i = 0; i < 40; i++) {
+    throwIfAborted(signal);
     if (await canConnectSocket()) return;
-    await sleep(100);
+    await sleep(100, signal);
   }
 
   throw new Error("Failed to start telegram daemon (socket not available)");
@@ -194,20 +267,49 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  async function connectPersistent(ctx: ExtensionContext): Promise<void> {
+  async function connectPersistent(ctx: ExtensionContext, signal?: AbortSignal): Promise<void> {
     if (state.socket && !state.socket.destroyed) return;
 
-    await ensureDaemonRunning(daemonPath);
+    await ensureDaemonRunning(daemonPath, signal);
+    throwIfAborted(signal);
 
     const socket = net.connect(SOCKET_PATH);
-    state.socket = socket;
-
-    createJsonlReader(socket, handleDaemonMessage);
 
     await new Promise<void>((resolve, reject) => {
-      socket.once("connect", () => resolve());
-      socket.once("error", (e) => reject(e));
+      const onConnect = () => {
+        cleanup();
+        resolve();
+      };
+      const onError = (error: Error) => {
+        cleanup();
+        reject(error);
+      };
+      const onAbort = () => {
+        cleanup();
+        try {
+          socket.destroy();
+        } catch {}
+        reject(new Error("Cancelled"));
+      };
+      const cleanup = () => {
+        socket.off("connect", onConnect);
+        socket.off("error", onError);
+        signal?.removeEventListener("abort", onAbort);
+      };
+
+      socket.once("connect", onConnect);
+      socket.once("error", onError);
+
+      if (!signal) return;
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener("abort", onAbort, { once: true });
     });
+
+    state.socket = socket;
+    createJsonlReader(socket, handleDaemonMessage);
 
     socket.once("close", () => {
       disconnect();
@@ -234,21 +336,38 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  async function requestPin(): Promise<{ code: string; expiresAt: number } | null> {
+  async function requestPin(signal?: AbortSignal): Promise<{ code: string; expiresAt: number } | null> {
     if (!state.socket || state.socket.destroyed) return null;
 
     return await new Promise((resolve) => {
+      const finish = (value: { code: string; expiresAt: number } | null) => {
+        daemonMessageHandlers.delete(handler);
+        signal?.removeEventListener("abort", onAbort);
+        resolve(value);
+      };
+
       const handler = (msg: DaemonToClientMessage) => {
         if (msg.type === "pin") {
-          daemonMessageHandlers.delete(handler);
-          resolve({ code: msg.code, expiresAt: msg.expiresAt });
+          finish({ code: msg.code, expiresAt: msg.expiresAt });
           return;
         }
         if (msg.type === "error") {
-          daemonMessageHandlers.delete(handler);
-          resolve(null);
+          finish(null);
         }
       };
+
+      const onAbort = () => {
+        finish(null);
+      };
+
+      if (signal) {
+        if (signal.aborted) {
+          finish(null);
+          return;
+        }
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+
       daemonMessageHandlers.add(handler);
       send({ type: "request_pin" });
     });
@@ -403,12 +522,35 @@ export default function (pi: ExtensionAPI) {
           await saveConfig({ ...cfg, botToken: token.trim() });
         }
 
-        await connectPersistent(ctx);
+        const connectResult = await runWithLoader(ctx, "Connecting to Telegram daemon...", (signal) =>
+          connectPersistent(ctx, signal),
+        );
+        if (connectResult.cancelled) {
+          notify("Cancelled.", "info");
+          return;
+        }
+        if (connectResult.error) {
+          notify(`Failed to connect: ${connectResult.error}`, "error");
+          return;
+        }
+
         updateMeta(ctx);
 
         const freshCfg = await loadConfig();
         if (!freshCfg.pairedChatId) {
-          const pin = await requestPin();
+          const pinResult = await runWithLoader(ctx, "Requesting Telegram pairing PIN...", (signal) =>
+            requestPin(signal),
+          );
+          if (pinResult.cancelled) {
+            notify("Cancelled.", "info");
+            return;
+          }
+          if (pinResult.error) {
+            notify(`Failed to request PIN: ${pinResult.error}`, "error");
+            return;
+          }
+
+          const pin = pinResult.value;
           if (!pin) {
             notify("Failed to request PIN from daemon.", "error");
             return;
