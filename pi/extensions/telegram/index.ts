@@ -268,6 +268,11 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.setWidget("telegram", undefined);
   }
 
+  function connectedStatusText(ctx: ExtensionContext, windowNo: number): string {
+    const text = `telegram: connected (window ${windowNo})`;
+    return ctx.hasUI ? ctx.ui.theme.fg("dim", text) : text;
+  }
+
   function disconnect(restartAutoConnect = true) {
     const socket = state.socket;
     state.socket = null;
@@ -489,7 +494,7 @@ export default function (pi: ExtensionAPI) {
       state.windowNo = msg.windowNo;
       stopAutoConnectLoop();
       if (state.lastCtx?.hasUI) {
-        state.lastCtx.ui.setStatus("telegram", `telegram: connected (window ${msg.windowNo})`);
+        state.lastCtx.ui.setStatus("telegram", connectedStatusText(state.lastCtx, msg.windowNo));
       }
       return;
     }
@@ -643,7 +648,7 @@ export default function (pi: ExtensionAPI) {
 
         updateMeta(ctx);
         if (ctx.hasUI && state.windowNo !== null) {
-          ctx.ui.setStatus("telegram", `telegram: connected (window ${state.windowNo})`);
+          ctx.ui.setStatus("telegram", connectedStatusText(ctx, state.windowNo));
         }
 
         const freshCfg = await loadConfig();
