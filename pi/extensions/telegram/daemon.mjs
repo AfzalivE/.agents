@@ -78,6 +78,8 @@ const pendingPins = new Map();
 
 let shutdownTimer = null;
 let typingTimer = null;
+let server = null;
+let shuttingDown = false;
 
 function isAuthorizedChat(chatId) {
   return pairedChatId !== undefined && chatId === pairedChatId;
@@ -136,6 +138,63 @@ async function clearPairing() {
   chatState.activeWindowId = undefined;
   chatState.lastSeenSeqByWindowId = {};
   updateTypingIndicator();
+}
+
+function disconnectAllWindows() {
+  for (const w of [...windows.values()]) {
+    try {
+      w.socket.end();
+    } catch {}
+    try {
+      w.socket.destroy();
+    } catch {}
+  }
+  windows.clear();
+  chatState.activeWindowId = undefined;
+}
+
+async function shutdownDaemon({ clearPairingState = false } = {}) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  cancelShutdown();
+
+  if (clearPairingState) {
+    try {
+      await clearPairing();
+    } catch {}
+  }
+
+  stopTypingIndicator();
+  disconnectAllWindows();
+
+  try {
+    await bot?.stopPolling();
+  } catch {}
+
+  if (server) {
+    await new Promise((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        resolve();
+      };
+
+      try {
+        server.close(() => finish());
+      } catch {
+        finish();
+      }
+
+      setTimeout(finish, 200);
+    });
+  }
+
+  try {
+    fs.unlinkSync(SOCKET_PATH);
+  } catch {}
+
+  process.exit(0);
 }
 
 function escapeHtml(text) {
@@ -218,10 +277,10 @@ async function switchWindow(chatId, windowNo) {
 
 function sendToActiveWindow(msg) {
   const w = getActiveWindow();
-  if (!w) return { ok: false, reason: "No active window" };
+  if (!w) return false;
   const send = makeJsonlWriter(w.socket);
   send(msg);
-  return { ok: true };
+  return true;
 }
 
 async function handleTelegramMessage(msg) {
@@ -273,7 +332,7 @@ async function handleTelegramMessage(msg) {
   if (text === "/help") {
     await botSend(
       chatId,
-      "telegram commands:\n/windows - list windows\n/window N - switch active window\n/unpair - disconnect active window\n/esc - abort current agent run in active window\n/steer <msg> - interrupt (steer) active window\n(plain text) - send to active window (queued as follow-up if busy)\n",
+      "telegram commands:\n/windows - list windows\n/window N - switch active window\n/unpair - unpair Telegram and disconnect all windows\n/esc - abort current agent run in active window\n/steer <msg> - interrupt (steer) active window\n(plain text) - send to active window (queued as follow-up if busy)\n",
     );
     return;
   }
@@ -291,32 +350,18 @@ async function handleTelegramMessage(msg) {
   }
 
   if (text === "/unpair") {
-    const w = getActiveWindow();
-    if (!w) {
-      await botSend(chatId, "No active window. Use /windows then /window N.");
-      return;
+    try {
+      await botSendSystem(chatId, "Unpaired Telegram. All windows disconnected. Run /telegram pair in pi to pair again.");
+    } catch {
+      // ignore
     }
-
-    const n = w.windowNo;
-
-    // Disconnect the window (removes it from /windows)
-    try {
-      w.socket.end();
-    } catch {}
-    try {
-      w.socket.destroy();
-    } catch {}
-
-    if (chatState.activeWindowId === w.windowId) chatState.activeWindowId = undefined;
-    updateTypingIndicator();
-
-    await botSendSystem(chatId, `Disconnected window ${n}. Use /windows to list remaining windows.`);
+    await shutdownDaemon({ clearPairingState: true });
     return;
   }
 
   if (text === "/esc") {
-    const res = sendToActiveWindow({ type: "abort" });
-    if (!res.ok) await botSend(chatId, "No active window. Use /windows then /window N.");
+    const sent = sendToActiveWindow({ type: "abort" });
+    if (!sent) await botSend(chatId, "No active window. Use /windows then /window N.");
     return;
   }
 
@@ -327,8 +372,8 @@ async function handleTelegramMessage(msg) {
       await botSend(chatId, "Usage: /steer <message>");
       return;
     }
-    const res = sendToActiveWindow({ type: "inject", mode: "steer", text: msgText });
-    if (!res.ok) await botSend(chatId, "No active window. Use /windows then /window N.");
+    const sent = sendToActiveWindow({ type: "inject", mode: "steer", text: msgText });
+    if (!sent) await botSend(chatId, "No active window. Use /windows then /window N.");
     return;
   }
 
@@ -337,32 +382,22 @@ async function handleTelegramMessage(msg) {
     return;
   }
 
-  const res = sendToActiveWindow({ type: "inject", mode: "followUp", text });
-  if (!res.ok) {
+  const sent = sendToActiveWindow({ type: "inject", mode: "followUp", text });
+  if (!sent) {
     await botSend(chatId, "No active window. Use /windows then /window N.");
   }
 }
 
 
-async function maybeShutdownSoon(server) {
+async function maybeShutdownSoon() {
   if (windows.size > 0) return;
-  if (shutdownTimer) return;
+  if (shutdownTimer || shuttingDown) return;
 
-  shutdownTimer = setTimeout(async () => {
+  shutdownTimer = setTimeout(() => {
     shutdownTimer = null;
-    if (windows.size > 0) return;
+    if (windows.size > 0 || shuttingDown) return;
     console.error("[telegram] No clients connected, shutting down.");
-    stopTypingIndicator();
-    try {
-      await bot?.stopPolling();
-    } catch {}
-    try {
-      server.close();
-    } catch {}
-    try {
-      fs.unlinkSync(SOCKET_PATH);
-    } catch {}
-    process.exit(0);
+    shutdownDaemon().catch(() => {});
   }, 60_000);
 }
 
@@ -431,10 +466,7 @@ async function startServer() {
             });
             send({
               type: "registered",
-              windowId,
               windowNo,
-              pairedChatId: pairedChatId ?? null,
-              activeWindowNo: chatState.activeWindowId ? (windows.get(chatState.activeWindowId)?.windowNo ?? null) : null,
             });
             updateTypingIndicator();
             break;
@@ -463,14 +495,21 @@ async function startServer() {
             }
             const expiresAt = Date.now() + 60_000;
             pendingPins.set(code, { windowId, expiresAt });
+
+            const cleanupTimer = setTimeout(() => {
+              const pending = pendingPins.get(code);
+              if (pending && pending.expiresAt <= Date.now()) {
+                pendingPins.delete(code);
+              }
+            }, 60_000);
+            cleanupTimer.unref?.();
+
             send({ type: "pin", code, expiresAt });
             break;
           }
 
-          case "unpair": {
-            clearPairing()
-              .then(() => send({ type: "ok" }))
-              .catch((e) => send({ type: "error", error: String(e?.message ?? e) }));
+          case "shutdown": {
+            shutdownDaemon({ clearPairingState: true }).catch(() => {});
             break;
           }
 
@@ -495,11 +534,6 @@ async function startServer() {
             break;
           }
 
-          case "ping": {
-            send({ type: "pong" });
-            break;
-          }
-
           default:
             break;
         }
@@ -517,7 +551,7 @@ async function startServer() {
         }
       }
       updateTypingIndicator();
-      maybeShutdownSoon(srv).catch(() => {});
+      maybeShutdownSoon().catch(() => {});
     });
 
     socket.on("error", () => {
@@ -546,7 +580,7 @@ async function startServer() {
   return srv;
 }
 
-const server = await startServer();
+server = await startServer();
 
 // Start bot polling only after we've acquired the single-instance socket.
 bot = new TelegramBot(config.botToken, { polling: true });
@@ -555,18 +589,12 @@ bot.on("message", (msg) => {
 });
 updateTypingIndicator();
 
-process.on("SIGINT", async () => {
-  stopTypingIndicator();
-  try {
-    await bot?.stopPolling();
-  } catch {}
-  try {
-    server.close();
-  } catch {}
-  try {
-    fs.unlinkSync(SOCKET_PATH);
-  } catch {}
-  process.exit(0);
+process.on("SIGINT", () => {
+  shutdownDaemon().catch(() => {});
+});
+
+process.on("SIGTERM", () => {
+  shutdownDaemon().catch(() => {});
 });
 
 console.error(`[telegram] Daemon running. Socket: ${SOCKET_PATH}`);
