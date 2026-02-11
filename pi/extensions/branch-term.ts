@@ -3,7 +3,7 @@ import * as fs from "node:fs"
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent"
 import { SessionManager } from "@mariozechner/pi-coding-agent"
 
-const TERMINAL_FLAG = "branch-terminal"
+const TERMINAL_FLAG = "terminal"
 
 function getTerminalFlag(pi: ExtensionAPI): string | undefined {
 	const value = pi.getFlag(`--${TERMINAL_FLAG}`)
@@ -15,9 +15,20 @@ function getTerminalFlag(pi: ExtensionAPI): string | undefined {
 function renderTerminalCommand(template: string, cwd: string, sessionFile: string): string {
 	let command = template
 	command = command.split("{cwd}").join(cwd)
-	if (command.includes("{session}")) {
-		return command.split("{session}").join(sessionFile)
+
+	if (command.includes("{command}")) {
+		const piCommand = `pi --session ${shellQuote(sessionFile)}`
+		command = command.split("{command}").join(piCommand)
 	}
+
+	if (command.includes("{session}")) {
+		command = command.split("{session}").join(sessionFile)
+	}
+
+	if (template.includes("{command}") || template.includes("{session}")) {
+		return command
+	}
+
 	return `${command} ${sessionFile}`
 }
 
@@ -82,7 +93,7 @@ function spawnGhostty(sessionFile: string, cwd: string, onError?: (error: Error)
 export default function (pi: ExtensionAPI) {
 	pi.registerFlag(TERMINAL_FLAG, {
 		description:
-			"Command to open a new terminal. Use {session} for the session file path and {cwd} for the working directory.",
+			"Command to open a new terminal. Use {cwd} for working directory and optional {command} for the pi command.",
 		type: "string",
 	})
 

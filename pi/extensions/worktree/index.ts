@@ -23,6 +23,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 const STATUS_KEY = "worktree";
+const TERMINAL_FLAG = "terminal";
 const FETCH_TIMEOUT_MS = 60_000;
 const STATUS_SPINNER_INTERVAL_MS = 80;
 const STATUS_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -102,6 +103,22 @@ function stripRefsHeadsPrefix(branch: string): string {
 function shellQuote(value: string): string {
 	if (value.length === 0) return "''";
 	return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function getTerminalFlag(pi: ExtensionAPI): string | undefined {
+	const value = pi.getFlag(`--${TERMINAL_FLAG}`);
+	if (typeof value !== "string") return undefined;
+	const trimmed = value.trim();
+	return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function renderTerminalCommand(template: string, cwd: string): string {
+	let command = template;
+	command = command.split("{cwd}").join(cwd);
+	if (command.includes("{command}")) {
+		return command.split("{command}").join("pi");
+	}
+	return `${command} pi`;
 }
 
 function realpathOrResolve(p: string): string {
@@ -999,6 +1016,19 @@ async function openSessionInDirectory(
 
 	const manualHint = `cd ${shellQuote(targetPath)} && pi`;
 
+	const terminalFlag = getTerminalFlag(pi);
+	if (terminalFlag) {
+		const command = renderTerminalCommand(terminalFlag, targetPath);
+		spawnDetached("bash", ["-lc", command], (error) => {
+			if (ctx.hasUI) {
+				ctx.ui.notify(`Terminal command failed: ${error.message}`, "warning");
+				ctx.ui.notify(`Run manually: ${manualHint}`, "info");
+			}
+		});
+		ctx.ui.notify("Opened new session in custom terminal", "info");
+		return;
+	}
+
 	if (process.env.TMUX) {
 		const result = await pi.exec("tmux", [
 			"new-window",
@@ -1772,6 +1802,12 @@ function parseSubcommand(args: string): { subcommand: Subcommand | null; rest: s
 }
 
 export default function worktreeExtension(pi: ExtensionAPI) {
+	pi.registerFlag(TERMINAL_FLAG, {
+		description:
+			"Command to open a new terminal. Use {cwd} for working directory and optional {command} for the pi command.",
+		type: "string",
+	});
+
 	pi.registerCommand("worktree", {
 		description: "Create and manage git worktrees",
 		getArgumentCompletions: (argumentPrefix) => {
