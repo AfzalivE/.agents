@@ -24,12 +24,28 @@
 - Use the `oracle` skill when you need a review, a second opinion, or you're stuck.
 - Use the `git-commit` skill when you will commit changes or propose commit messages.
 - Use the `git-clean-history` skill when you need to create a clean branch with a refined commit history.
+- Use the `git-worktree` skill when you need to manage git worktrees for multiple branches in separate directories.
 - Use the `browser-tools` skill when you need to interact with web pages or automate browser actions.
 - Use the `homeassistant-ops` skill when you need to operate/refactor a Home Assistant instance.
+- Use the `ms-openapi-explorer` skill when you need to explore Microsoft Graph API v1.0 OpenAPI endpoints, schemas, and permissions.
 - Use the `openscad` skill when you need to create and render OpenSCAD 3D models.
 - Use the `sentry` skill when you need to fetch and analyze Sentry issues, events, and logs.
 - Use the `web-design` skill when you need to design and implement distinctive, production-ready web interfaces.
 - Use the `update-changelog` skill when you need to update CHANGELOG.md following Keep a Changelog.
+
+## Pi Extensions
+
+- Use `/answer` to extract questions from the last assistant message and answer them interactively.
+- Use `/branch` to fork the current session into a new terminal window.
+- Use `/loop` to repeat a prompt until a breakout condition is met.
+- Use `/review` (and `/end-review`) to review PRs, branches, commits, uncommitted changes, or folders.
+- Use `/session-breakdown` to inspect recent Pi session usage and model/cost breakdowns.
+- Use `/todos` for file-based todo management in `.pi/todos`.
+- Use `/worktree` to create, archive, clean, and list git worktrees.
+- Use `/sandbox` to inspect active sandbox config for bash operations (`--no-sandbox` disables sandboxing).
+- Use `/telegram` to pair, inspect status, or unpair the Telegram bridge.
+- `git-checkpoint` runs automatically to create per-turn stash checkpoints used during forks.
+- `notify` runs automatically to send terminal notifications when Pi is ready for input.
 
 ## Tools
 

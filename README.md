@@ -32,7 +32,9 @@ Skills and `AGENTS.md` are **symlinked** from this repo into each agent's config
 | `browser-tools` | Interactive browser automation via Chrome DevTools Protocol |
 | `git-clean-history` | Reimplement a branch on a fresh branch off `main` with a clean commit history |
 | `git-commit` | Tidy, focused commits with clear rationale in messages |
+| `git-worktree` | Manage git worktrees for multiple branches in separate directories |
 | `homeassistant-ops` | Operate a Home Assistant instance via REST/WebSocket APIs |
+| `ms-openapi-explorer` | Explore Microsoft Graph v1.0 OpenAPI endpoints, schemas, and permissions |
 | `openscad` | Create and render OpenSCAD 3D models, export STL |
 | `oracle` | Second opinion from another LLM for debugging, refactors, or design checks |
 | `sentry` | Fetch and analyze Sentry issues, events, and logs |
@@ -44,10 +46,13 @@ Skills and `AGENTS.md` are **symlinked** from this repo into each agent's config
 | Extension | Command | Description |
 |-----------|---------|-------------|
 | `answer` | `/answer` | Extract and interactively answer agent questions |
-| `branch-term` | `/branch-term` | Open a new terminal on the current session's git branch |
+| `branch-term` | `/branch` | Fork current session into a new terminal |
 | `loop` | `/loop` | Repeat a prompt until the agent signals success |
-| `review` | `/review` | Review PRs, branches, commits, or uncommitted changes |
+| `review` | `/review` (+ `/end-review`) | Review PRs, branches, commits, folders, or uncommitted changes |
 | `session-breakdown` | `/session-breakdown` | Usage stats and contribution-style calendar |
-| `todos` | `/todo` | File-based todo items with claim/release for multi-session work |
+| `todos` | `/todos` | File-based todo items with claim/release for multi-session work |
+| `worktree` | `/worktree` | Create, archive, clean, and list git worktrees |
+| `sandbox` | `/sandbox` | Show sandbox configuration for bash operations (`--no-sandbox` disables it) |
+| `telegram` | `/telegram` | Pair a Telegram bot and interact with Pi sessions remotely (`pair`, `status`, `unpair`) |
 | `git-checkpoint` | _automatic_ | Stash checkpoints each turn so `/fork` can restore code state |
 | `notify` | _automatic_ | Terminal notification when the agent is waiting for input |
