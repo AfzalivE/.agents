@@ -988,6 +988,7 @@ function spawnGhosttyFresh(cwd: string, onError?: (error: Error) => void): void 
 
 		args.push(
 			"--args",
+			"--window-save-state=never",
 			"-e",
 			"bash",
 			"-lc",

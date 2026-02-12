@@ -71,6 +71,7 @@ function spawnGhostty(sessionFile: string, cwd: string, onError?: (error: Error)
 
 		args.push(
 			"--args",
+			"--window-save-state=never",
 			"-e",
 			"bash",
 			"-lc",
