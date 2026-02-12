@@ -69,6 +69,7 @@ Once paired:
 
 - The daemon is started on-demand by `/telegram pair`, auto-restarts when a paired window opens, and auto-stops ~60s after the last window disconnects.
 - While paired, all open pi windows auto-register with Telegram `/windows`.
+- On daemon startup, bot commands are synced via Telegram `setMyCommands` so slash-command autocomplete is available in the app.
 - Output mirrored to Telegram is the assistant’s final text at `turn_end` (no tool output in this first version).
   - For short messages we try Telegram `Markdown` formatting; if Telegram rejects the formatting, we fall back to plain text.
   - Long messages are sent as plain text chunks.

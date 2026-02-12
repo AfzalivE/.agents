@@ -12,6 +12,16 @@ const SOCKET_PATH = path.join(RUN_DIR, "telegram.sock");
 const CONFIG_DIR = path.join(AGENT_DIR, "telegram");
 const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
 
+const TELEGRAM_COMMANDS = [
+  { command: "pin", description: "Pair this chat with pi using a 6-digit PIN" },
+  { command: "windows", description: "List connected pi windows" },
+  { command: "window", description: "Switch active window: /window N" },
+  { command: "esc", description: "Abort current run in active window" },
+  { command: "steer", description: "Interrupt active window: /steer <message>" },
+  { command: "unpair", description: "Unpair Telegram and disconnect all windows" },
+  { command: "help", description: "Show available commands" },
+];
+
 async function loadConfig() {
   try {
     const raw = await fsp.readFile(CONFIG_PATH, "utf8");
@@ -236,6 +246,16 @@ async function botSendSystem(chatId, text) {
   // Keep system messages short; avoid chunking to not split HTML entities/tags.
   const safe = escapeHtml(text);
   await bot.sendMessage(chatId, `<i>${safe}</i>`, { parse_mode: "HTML" });
+}
+
+async function syncBotCommands() {
+  if (!bot) return;
+  try {
+    await bot.setMyCommands(TELEGRAM_COMMANDS);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[telegram] Failed to sync bot commands: ${message}`);
+  }
 }
 
 function listWindowsText() {
@@ -584,6 +604,7 @@ server = await startServer();
 
 // Start bot polling only after we've acquired the single-instance socket.
 bot = new TelegramBot(config.botToken, { polling: true });
+void syncBotCommands();
 bot.on("message", (msg) => {
   handleTelegramMessage(msg).catch((e) => console.error("[telegram] telegram handler error", e));
 });
