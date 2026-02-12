@@ -1,6 +1,6 @@
 ---
 name: openscad
-description: "Create and render OpenSCAD 3D models. Generate preview images from multiple angles, extract customizable parameters, validate syntax, and export STL files for 3D printing platforms like MakerWorld."
+description: "Create and render OpenSCAD 3D models. Generate preview images from multiple angles, extract customizable parameters, validate syntax, and export STL files for 3D printing platforms like Printables."
 ---
 
 # OpenSCAD
@@ -133,12 +133,13 @@ Common camera angles:
 
 Format: `x,y,z,rotx,roty,rotz,distance`
 
-## MakerWorld publishing checklist
+## Printables publishing checklist
 
 Typically you need:
 1. STL file(s) exported via `export-stl.sh`
-2. Preview images (at least one good isometric view)
-3. A short description of customizable parameters
+2. Preview images (at least one strong hero/isometric view plus extra angles)
+3. A model description covering customizable parameters, print settings, and assembly/use notes
+4. License/category/tags filled in for discoverability
 
 ## Examples
 
