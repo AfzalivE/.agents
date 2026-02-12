@@ -23,7 +23,10 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 const STATUS_KEY = "worktree";
+const TERMINAL_FLAG = "worktree-term";
 const FETCH_TIMEOUT_MS = 60_000;
+const STATUS_SPINNER_INTERVAL_MS = 80;
+const STATUS_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 // fs.copyFileSync mode: attempt COW (reflink/clonefile) then fall back to regular
 // copy, and fail if the destination already exists (skip-on-exist for idempotency).
@@ -102,6 +105,22 @@ function shellQuote(value: string): string {
 	return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
+function getTerminalFlag(pi: ExtensionAPI): string | undefined {
+	const value = pi.getFlag(`--${TERMINAL_FLAG}`);
+	if (typeof value !== "string") return undefined;
+	const trimmed = value.trim();
+	return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function renderTerminalCommand(template: string, cwd: string): string {
+	let command = template;
+	command = command.split("{cwd}").join(cwd);
+	if (command.includes("{command}")) {
+		return command.split("{command}").join("pi");
+	}
+	return `${command} pi`;
+}
+
 function realpathOrResolve(p: string): string {
 	try {
 		return fs.realpathSync(p);
@@ -121,6 +140,51 @@ async function withStatus<T>(ctx: ExtensionCommandContext, text: string, fn: () 
 		return await fn();
 	} finally {
 		if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
+	}
+}
+
+function formatPhaseScriptStatus(
+	verb: "Running" | "Finished",
+	phase: "setup" | "archive",
+	label: string,
+): string {
+	const suffix = ` ${phase}`;
+	if (label.toLowerCase().endsWith(suffix)) {
+		const source = label.slice(0, -suffix.length).trim();
+		if (source.length > 0) {
+			return `${verb} ${phase} for ${source}`;
+		}
+	}
+	return `${verb} ${label}`;
+}
+
+function formatRunningScriptStatus(phase: "setup" | "archive", label: string): string {
+	return formatPhaseScriptStatus("Running", phase, label);
+}
+
+function formatFinishedScriptStatus(phase: "setup" | "archive", label: string): string {
+	return formatPhaseScriptStatus("Finished", phase, label);
+}
+
+async function withSpinnerStatus<T>(ctx: ExtensionCommandContext, text: string, fn: () => Promise<T>): Promise<T> {
+	if (!ctx.hasUI) return fn();
+
+	let frame = 0;
+	const render = () => {
+		ctx.ui.setStatus(STATUS_KEY, `${STATUS_SPINNER_FRAMES[frame]} ${text}`);
+	};
+
+	render();
+	const timer = setInterval(() => {
+		frame = (frame + 1) % STATUS_SPINNER_FRAMES.length;
+		render();
+	}, STATUS_SPINNER_INTERVAL_MS);
+
+	try {
+		return await fn();
+	} finally {
+		clearInterval(timer);
+		ctx.ui.setStatus(STATUS_KEY, undefined);
 	}
 }
 
@@ -465,6 +529,16 @@ function asNonEmptyString(value: unknown): string | null {
 	return trimmed.length > 0 ? trimmed : null;
 }
 
+/** Coerce a config value (string or string[]) into a single shell command, or null. */
+function asCommand(value: unknown): string | null {
+	if (typeof value === "string") return asNonEmptyString(value);
+	if (Array.isArray(value)) {
+		const parts = value.filter((c): c is string => typeof c === "string" && c.trim().length > 0);
+		return parts.length > 0 ? parts.join(" && ") : null;
+	}
+	return null;
+}
+
 function readJsonFile(filePath: string): unknown | null {
 	try {
 		const raw = fs.readFileSync(filePath, "utf8");
@@ -477,6 +551,8 @@ function readJsonFile(filePath: string): unknown | null {
 function inferSetupActions(worktreeRoot: string): SetupAction[] {
 	const actions: SetupAction[] = [];
 
+	// Conductor: conductor.json → scripts.setup
+	// https://docs.conductor.build/core/conductor-json
 	const conductorConfigPath = path.join(worktreeRoot, "conductor.json");
 	const conductorConfig = readJsonFile(conductorConfigPath) as any;
 	const conductorSetup = asNonEmptyString(conductorConfig?.scripts?.setup);
@@ -484,33 +560,76 @@ function inferSetupActions(worktreeRoot: string): SetupAction[] {
 		actions.push({ label: "Conductor setup", command: conductorSetup, source: "conductor.json" });
 	}
 
-	const oneCodeConfigPath = path.join(worktreeRoot, "1code.json");
+	// 1Code: .1code/worktree.json → setup-worktree (or setup-worktree-unix / setup-worktree-windows)
+	// Values can be a string or string[]. Generic key takes priority, then platform-specific.
+	// https://github.com/21st-dev/1code → src/main/lib/git/worktree-config.ts
+	const oneCodeConfigPath = path.join(worktreeRoot, ".1code", "worktree.json");
 	const oneCodeConfig = readJsonFile(oneCodeConfigPath) as any;
-	const oneCodeSetup = asNonEmptyString(oneCodeConfig?.scripts?.setup);
-	if (oneCodeSetup) {
-		actions.push({ label: "1Code setup", command: oneCodeSetup, source: "1code.json" });
+	if (oneCodeConfig) {
+		const platformKey = process.platform === "win32" ? "setup-worktree-windows" : "setup-worktree-unix";
+		const oneCodeSetup = asCommand(oneCodeConfig["setup-worktree"]) ?? asCommand(oneCodeConfig[platformKey]);
+		if (oneCodeSetup) {
+			actions.push({ label: "1Code setup", command: oneCodeSetup, source: ".1code/worktree.json" });
+		}
 	}
 
-	const scriptProviders = [
-		{ dir: path.join(worktreeRoot, ".claude", "scripts"), relDir: ".claude/scripts", label: "CCPM" },
-		{ dir: path.join(worktreeRoot, ".codex", "scripts"), relDir: ".codex/scripts", label: "Codex" },
-	];
-
-	const knownScripts = ["bootstrap.sh", "setup.sh", "init.sh"];
-	for (const provider of scriptProviders) {
-		if (!fs.existsSync(provider.dir) || !isDirectory(provider.dir)) continue;
-
-		for (const script of knownScripts) {
-			const absScript = path.join(provider.dir, script);
-			if (!fs.existsSync(absScript) || !isFile(absScript)) continue;
-
-			const relScript = `./${provider.relDir}/${script}`;
-			actions.push({
-				label: `${provider.label}: ${provider.relDir}/${script}`,
-				command: `bash ${shellQuote(relScript)}`,
-				source: `${provider.relDir}/${script}`,
-			});
+	// Cursor: .cursor/worktrees.json → same schema as 1Code
+	// https://cursor.com/docs/configuration/worktrees
+	const cursorConfigPath = path.join(worktreeRoot, ".cursor", "worktrees.json");
+	const cursorConfig = readJsonFile(cursorConfigPath) as any;
+	if (cursorConfig) {
+		const platformKey = process.platform === "win32" ? "setup-worktree-windows" : "setup-worktree-unix";
+		const cursorSetup = asCommand(cursorConfig["setup-worktree"]) ?? asCommand(cursorConfig[platformKey]);
+		if (cursorSetup) {
+			actions.push({ label: "Cursor setup", command: cursorSetup, source: ".cursor/worktrees.json" });
 		}
+	}
+
+	// Superset: .superset/config.json → setup (string[])
+	const supersetConfigPath = path.join(worktreeRoot, ".superset", "config.json");
+	const supersetConfig = readJsonFile(supersetConfigPath) as any;
+	const supersetSetup = asCommand(supersetConfig?.setup);
+	if (supersetSetup) {
+		actions.push({ label: "Superset setup", command: supersetSetup, source: ".superset/config.json" });
+	}
+
+	// CCPM: .claude/scripts/{bootstrap,setup,init}.sh
+	// https://github.com/elysenko/ccpm
+	const ccpmDir = path.join(worktreeRoot, ".claude", "scripts");
+	if (fs.existsSync(ccpmDir) && isDirectory(ccpmDir)) {
+		for (const script of ["bootstrap.sh", "setup.sh", "init.sh"]) {
+			if (isFile(path.join(ccpmDir, script))) {
+				const relScript = `./.claude/scripts/${script}`;
+				actions.push({
+					label: `CCPM: .claude/scripts/${script}`,
+					command: `bash ${shellQuote(relScript)}`,
+					source: `.claude/scripts/${script}`,
+				});
+			}
+		}
+	}
+
+	return actions;
+}
+
+function inferArchiveActions(worktreeRoot: string): SetupAction[] {
+	const actions: SetupAction[] = [];
+
+	// Conductor: conductor.json → scripts.archive
+	// https://docs.conductor.build/core/conductor-json
+	const conductorConfigPath = path.join(worktreeRoot, "conductor.json");
+	const conductorConfig = readJsonFile(conductorConfigPath) as any;
+	const conductorArchive = asNonEmptyString(conductorConfig?.scripts?.archive);
+	if (conductorArchive) {
+		actions.push({ label: "Conductor archive", command: conductorArchive, source: "conductor.json" });
+	}
+
+	// Superset: .superset/config.json → teardown (string[])
+	const supersetConfigPath = path.join(worktreeRoot, ".superset", "config.json");
+	const supersetConfig = readJsonFile(supersetConfigPath) as any;
+	const supersetTeardown = asCommand(supersetConfig?.teardown);
+	if (supersetTeardown) {
+		actions.push({ label: "Superset teardown", command: supersetTeardown, source: ".superset/config.json" });
 	}
 
 	return actions;
@@ -715,29 +834,28 @@ async function applyWorktreeInclude(
 	ctx.ui.notify("Cached files copied", "info");
 }
 
-async function applySetupFromProjectFiles(
+async function runProjectScripts(
 	pi: ExtensionAPI,
 	ctx: ExtensionCommandContext,
 	worktreeRoot: string,
+	phase: "setup" | "archive",
+	actions: SetupAction[],
 ): Promise<void> {
-	if (!ctx.hasUI) return;
-
-	const actions = inferSetupActions(worktreeRoot);
-	if (actions.length === 0) return;
+	if (!ctx.hasUI || actions.length === 0) return;
 
 	let chosen: SetupAction | undefined;
 
 	if (actions.length === 1) {
 		const action = actions[0];
 		const ok = await ctx.ui.confirm(
-			"Run worktree setup?",
+			`Run worktree ${phase}?`,
 			`${action.label}\n\nCommand:\n${action.command}`,
 		);
 		if (!ok) return;
 		chosen = action;
 	} else {
 		const options = ["Skip", ...actions.map((a) => `${a.label} (${a.source})`)];
-		const choice = await ctx.ui.select("Choose setup to run", options);
+		const choice = await ctx.ui.select(`Choose ${phase} script to run`, options);
 		if (!choice || choice === "Skip") return;
 
 		const idx = options.indexOf(choice) - 1;
@@ -745,22 +863,25 @@ async function applySetupFromProjectFiles(
 		if (!chosen) return;
 
 		const ok = await ctx.ui.confirm(
-			"Run worktree setup?",
+			`Run worktree ${phase}?`,
 			`${chosen.label}\n\nCommand:\n${chosen.command}`,
 		);
 		if (!ok) return;
 	}
 
-	await withStatus(ctx, `Running setup: ${chosen.label}`, async () => {
+	const label = phase[0].toUpperCase() + phase.slice(1);
+	const statusText = formatRunningScriptStatus(phase, chosen.label);
+
+	await withSpinnerStatus(ctx, statusText, async () => {
 		const result = await pi.exec("bash", ["-c", chosen.command], { cwd: worktreeRoot });
 		if (result.code !== 0) {
 			throw new Error(
-				`Setup failed (exit ${result.code}). Run this manually in ${worktreeRoot}:\n${chosen.command}`,
+				`${label} failed (exit ${result.code}). Run this manually in ${worktreeRoot}:\n${chosen.command}`,
 			);
 		}
 	});
 
-	ctx.ui.notify(`Setup finished: ${chosen.label}`, "info");
+	ctx.ui.notify(formatFinishedScriptStatus(phase, chosen.label), "info");
 }
 
 async function ensureCanPrompt(ctx: ExtensionCommandContext, message: string): Promise<boolean> {
@@ -867,6 +988,7 @@ function spawnGhosttyFresh(cwd: string, onError?: (error: Error) => void): void 
 
 		args.push(
 			"--args",
+			"--window-save-state=never",
 			"-e",
 			"bash",
 			"-lc",
@@ -894,6 +1016,19 @@ async function openSessionInDirectory(
 	if (!ctx.hasUI) return;
 
 	const manualHint = `cd ${shellQuote(targetPath)} && pi`;
+
+	const terminalFlag = getTerminalFlag(pi);
+	if (terminalFlag) {
+		const command = renderTerminalCommand(terminalFlag, targetPath);
+		spawnDetached("bash", ["-lc", command], (error) => {
+			if (ctx.hasUI) {
+				ctx.ui.notify(`Terminal command failed: ${error.message}`, "warning");
+				ctx.ui.notify(`Run manually: ${manualHint}`, "info");
+			}
+		});
+		ctx.ui.notify("Opened new session in custom terminal", "info");
+		return;
+	}
 
 	if (process.env.TMUX) {
 		const result = await pi.exec("tmux", [
@@ -1100,7 +1235,7 @@ Continue?`,
 		// of always copying from the primary worktree.
 		const currentWorktrees = await listWorktrees(pi, repo.mainRoot);
 		await applyWorktreeInclude(pi, ctx, repo.mainRoot, targetPath, currentWorktrees);
-		await applySetupFromProjectFiles(pi, ctx, targetPath);
+		await runProjectScripts(pi, ctx, targetPath, "setup", inferSetupActions(targetPath));
 
 		await openSessionInDirectory(pi, ctx, targetPath);
 	});
@@ -1201,6 +1336,8 @@ async function archiveWorktree(
 			force = true;
 		}
 	}
+
+	await runProjectScripts(pi, ctx, wt.path, "archive", inferArchiveActions(wt.path));
 
 	const removeArgs = force ? ["worktree", "remove", "--force", wt.path] : ["worktree", "remove", wt.path];
 	const remove = await git(pi, repo.mainRoot, removeArgs);
@@ -1312,7 +1449,7 @@ async function handleArchive(pi: ExtensionAPI, ctx: ExtensionCommandContext, arg
 
 	await ctx.waitForIdle();
 
-	await withStatus(ctx, `Archiving worktree: ${branch}`, async () => {
+	await withStatus(ctx, `Archiving ${branch}`, async () => {
 		const repo = await getRepoInfo(pi, ctx.cwd);
 		const defaultMain = await getDefaultMainBranch(pi, repo.mainRoot);
 
@@ -1559,16 +1696,12 @@ function formatWorktreeLabel(item: WorktreeDisplayItem, theme: { fg: (c: string,
 async function handleList(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
 	await ctx.waitForIdle();
 
-	if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, "Listing worktrees");
-	let repo: RepoInfo;
-	let items: WorktreeDisplayItem[];
-	try {
-		repo = await getRepoInfo(pi, ctx.cwd);
+	const { repo, items } = await withStatus(ctx, "Listing worktrees", async () => {
+		const repo = await getRepoInfo(pi, ctx.cwd);
 		const worktrees = await listWorktrees(pi, repo.mainRoot);
-		items = await gatherWorktreeDisplayItems(pi, repo, worktrees);
-	} finally {
-		if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
-	}
+		const items = await gatherWorktreeDisplayItems(pi, repo, worktrees);
+		return { repo, items };
+	});
 
 	if (!ctx.hasUI) {
 		for (const item of items) {
@@ -1653,8 +1786,10 @@ async function handleList(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promi
 	}
 
 	if (result.action === "archive") {
-		const defaultMain = await getDefaultMainBranch(pi, repo.mainRoot);
-		await archiveWorktree(pi, ctx, repo, result.item.branch, "prompt", defaultMain);
+		await withStatus(ctx, `Archiving ${result.item.branch}`, async () => {
+			const defaultMain = await getDefaultMainBranch(pi, repo.mainRoot);
+			await archiveWorktree(pi, ctx, repo, result.item.branch, "prompt", defaultMain, result.item.wt);
+		});
 	}
 }
 
@@ -1668,6 +1803,12 @@ function parseSubcommand(args: string): { subcommand: Subcommand | null; rest: s
 }
 
 export default function worktreeExtension(pi: ExtensionAPI) {
+	pi.registerFlag(TERMINAL_FLAG, {
+		description:
+			"Command to open a new terminal. Use {cwd} for working directory and optional {command} for the pi command.",
+		type: "string",
+	});
+
 	pi.registerCommand("worktree", {
 		description: "Create and manage git worktrees",
 		getArgumentCompletions: (argumentPrefix) => {

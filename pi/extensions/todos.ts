@@ -29,7 +29,16 @@
  * Use `/todos` to bring up the visual todo manager or just let the LLM use them
  * naturally.
  */
-import { DynamicBorder, copyToClipboard, getMarkdownTheme, keyHint, type ExtensionAPI, type ExtensionContext, type Theme } from "@mariozechner/pi-coding-agent";
+import {
+	BorderedLoader,
+	DynamicBorder,
+	copyToClipboard,
+	getMarkdownTheme,
+	keyHint,
+	type ExtensionAPI,
+	type ExtensionContext,
+	type Theme,
+} from "@mariozechner/pi-coding-agent";
 import { StringEnum } from "@mariozechner/pi-ai";
 import { Type } from "@sinclair/typebox";
 import path from "node:path";
@@ -1080,6 +1089,48 @@ function listTodosSync(todosDir: string): TodoFrontMatter[] {
 	return sortTodos(todos);
 }
 
+async function runWithLoader<T>(
+	ctx: ExtensionContext,
+	message: string,
+	task: (signal: AbortSignal) => Promise<T>,
+): Promise<{ cancelled: boolean; value?: T; error?: string }> {
+	if (!ctx.hasUI) {
+		const controller = new AbortController();
+		try {
+			const value = await task(controller.signal);
+			return { cancelled: false, value };
+		} catch (error) {
+			return {
+				cancelled: false,
+				error: error instanceof Error ? error.message : String(error),
+			};
+		}
+	}
+
+	const result = await ctx.ui.custom<{ cancelled: boolean; value?: T; error?: string }>((tui, theme, _kb, done) => {
+		const loader = new BorderedLoader(tui, theme, message);
+		let settled = false;
+		const finish = (value: { cancelled: boolean; value?: T; error?: string }) => {
+			if (settled) return;
+			settled = true;
+			done(value);
+		};
+
+		loader.onAbort = () => finish({ cancelled: true });
+
+		task(loader.signal)
+			.then((value) => finish({ cancelled: false, value }))
+			.catch((error) => {
+				const errorMessage = error instanceof Error ? error.message : String(error);
+				finish({ cancelled: false, error: errorMessage });
+			});
+
+		return loader;
+	});
+
+	return result;
+}
+
 function getTodoTitle(todo: TodoFrontMatter): string {
 	return todo.title || "(untitled)";
 }
@@ -1801,7 +1852,17 @@ export default function todosExtension(pi: ExtensionAPI) {
 		},
 		handler: async (args, ctx) => {
 			const todosDir = getTodosDir(ctx.cwd);
-			const todos = await listTodos(todosDir);
+			const todosLoad = await runWithLoader(ctx, "Loading todos...", async (_signal) => listTodos(todosDir));
+			if (todosLoad.cancelled) {
+				if (ctx.hasUI) ctx.ui.notify("Cancelled", "info");
+				return;
+			}
+			if (todosLoad.error) {
+				if (ctx.hasUI) ctx.ui.notify(`Failed to load todos: ${todosLoad.error}`, "error");
+				else throw new Error(todosLoad.error);
+				return;
+			}
+			const todos = todosLoad.value ?? [];
 			const currentSessionId = ctx.sessionManager.getSessionId();
 			const searchTerm = (args ?? "").trim();
 

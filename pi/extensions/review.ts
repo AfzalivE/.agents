@@ -327,11 +327,22 @@ function parsePrReference(ref: string): number | null {
 /**
  * Get PR information from GitHub CLI
  */
-async function getPrInfo(pi: ExtensionAPI, prNumber: number): Promise<{ baseBranch: string; title: string; headBranch: string } | null> {
-	const { stdout, code } = await pi.exec("gh", [
-		"pr", "view", String(prNumber),
-		"--json", "baseRefName,title,headRefName",
-	]);
+async function getPrInfo(
+	pi: ExtensionAPI,
+	prNumber: number,
+	signal?: AbortSignal,
+): Promise<{ baseBranch: string; title: string; headBranch: string } | null> {
+	const { stdout, code } = await pi.exec(
+		"gh",
+		[
+			"pr",
+			"view",
+			String(prNumber),
+			"--json",
+			"baseRefName,title,headRefName",
+		],
+		{ signal },
+	);
 
 	if (code !== 0) return null;
 
@@ -350,8 +361,12 @@ async function getPrInfo(pi: ExtensionAPI, prNumber: number): Promise<{ baseBran
 /**
  * Checkout a PR using GitHub CLI
  */
-async function checkoutPr(pi: ExtensionAPI, prNumber: number): Promise<{ success: boolean; error?: string }> {
-	const { stdout, stderr, code } = await pi.exec("gh", ["pr", "checkout", String(prNumber)]);
+async function checkoutPr(
+	pi: ExtensionAPI,
+	prNumber: number,
+	signal?: AbortSignal,
+): Promise<{ success: boolean; error?: string }> {
+	const { stdout, stderr, code } = await pi.exec("gh", ["pr", "checkout", String(prNumber)], { signal });
 
 	if (code !== 0) {
 		return { success: false, error: stderr || stdout || "Failed to checkout PR" };
@@ -463,6 +478,35 @@ function getUserFacingHint(target: ReviewTarget): string {
 			return joined.length > 40 ? `folders: ${joined.slice(0, 37)}...` : `folders: ${joined}`;
 		}
 	}
+}
+
+async function runWithLoader<T>(
+	ctx: ExtensionContext,
+	message: string,
+	task: (signal: AbortSignal) => Promise<T>,
+): Promise<{ cancelled: boolean; value?: T; error?: string }> {
+	const result = await ctx.ui.custom<{ cancelled: boolean; value?: T; error?: string }>((tui, theme, _kb, done) => {
+		const loader = new BorderedLoader(tui, theme, message);
+		let settled = false;
+		const finish = (value: { cancelled: boolean; value?: T; error?: string }) => {
+			if (settled) return;
+			settled = true;
+			done(value);
+		};
+
+		loader.onAbort = () => finish({ cancelled: true });
+
+		task(loader.signal)
+			.then((value) => finish({ cancelled: false, value }))
+			.catch((error) => {
+				const errorMessage = error instanceof Error ? error.message : String(error);
+				finish({ cancelled: false, error: errorMessage });
+			});
+
+		return loader;
+	});
+
+	return result;
 }
 
 // Review preset options for the selector
@@ -798,9 +842,19 @@ export default function reviewExtension(pi: ExtensionAPI) {
 		}
 
 		// Get PR info from GitHub
-		ctx.ui.notify(`Fetching PR #${prNumber} info...`, "info");
-		const prInfo = await getPrInfo(pi, prNumber);
+		const prInfoLoad = await runWithLoader(ctx, `Fetching PR #${prNumber} info...`, (signal) =>
+			getPrInfo(pi, prNumber, signal),
+		);
+		if (prInfoLoad.cancelled) {
+			ctx.ui.notify("Cancelled", "info");
+			return null;
+		}
+		if (prInfoLoad.error) {
+			ctx.ui.notify(`Failed to fetch PR info: ${prInfoLoad.error}`, "error");
+			return null;
+		}
 
+		const prInfo = prInfoLoad.value;
 		if (!prInfo) {
 			ctx.ui.notify(`Could not find PR #${prNumber}. Make sure gh is authenticated and the PR exists.`, "error");
 			return null;
@@ -813,11 +867,21 @@ export default function reviewExtension(pi: ExtensionAPI) {
 		}
 
 		// Checkout the PR
-		ctx.ui.notify(`Checking out PR #${prNumber}...`, "info");
-		const checkoutResult = await checkoutPr(pi, prNumber);
+		const checkoutLoad = await runWithLoader(ctx, `Checking out PR #${prNumber}...`, (signal) =>
+			checkoutPr(pi, prNumber, signal),
+		);
+		if (checkoutLoad.cancelled) {
+			ctx.ui.notify("Cancelled", "info");
+			return null;
+		}
+		if (checkoutLoad.error) {
+			ctx.ui.notify(`Failed to checkout PR: ${checkoutLoad.error}`, "error");
+			return null;
+		}
 
-		if (!checkoutResult.success) {
-			ctx.ui.notify(`Failed to checkout PR: ${checkoutResult.error}`, "error");
+		const checkoutResult = checkoutLoad.value;
+		if (!checkoutResult?.success) {
+			ctx.ui.notify(`Failed to checkout PR: ${checkoutResult?.error ?? "unknown error"}`, "error");
 			return null;
 		}
 
@@ -979,20 +1043,40 @@ export default function reviewExtension(pi: ExtensionAPI) {
 		}
 
 		// Get PR info
-		ctx.ui.notify(`Fetching PR #${prNumber} info...`, "info");
-		const prInfo = await getPrInfo(pi, prNumber);
+		const prInfoLoad = await runWithLoader(ctx, `Fetching PR #${prNumber} info...`, (signal) =>
+			getPrInfo(pi, prNumber, signal),
+		);
+		if (prInfoLoad.cancelled) {
+			ctx.ui.notify("Cancelled", "info");
+			return null;
+		}
+		if (prInfoLoad.error) {
+			ctx.ui.notify(`Failed to fetch PR info: ${prInfoLoad.error}`, "error");
+			return null;
+		}
 
+		const prInfo = prInfoLoad.value;
 		if (!prInfo) {
 			ctx.ui.notify(`Could not find PR #${prNumber}. Make sure gh is authenticated and the PR exists.`, "error");
 			return null;
 		}
 
 		// Checkout the PR
-		ctx.ui.notify(`Checking out PR #${prNumber}...`, "info");
-		const checkoutResult = await checkoutPr(pi, prNumber);
+		const checkoutLoad = await runWithLoader(ctx, `Checking out PR #${prNumber}...`, (signal) =>
+			checkoutPr(pi, prNumber, signal),
+		);
+		if (checkoutLoad.cancelled) {
+			ctx.ui.notify("Cancelled", "info");
+			return null;
+		}
+		if (checkoutLoad.error) {
+			ctx.ui.notify(`Failed to checkout PR: ${checkoutLoad.error}`, "error");
+			return null;
+		}
 
-		if (!checkoutResult.success) {
-			ctx.ui.notify(`Failed to checkout PR: ${checkoutResult.error}`, "error");
+		const checkoutResult = checkoutLoad.value;
+		if (!checkoutResult?.success) {
+			ctx.ui.notify(`Failed to checkout PR: ${checkoutResult?.error ?? "unknown error"}`, "error");
 			return null;
 		}
 
