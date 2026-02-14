@@ -1449,7 +1449,7 @@ async function handleArchive(pi: ExtensionAPI, ctx: ExtensionCommandContext, arg
 
 	await ctx.waitForIdle();
 
-	await withStatus(ctx, `Archiving ${branch}`, async () => {
+	await withSpinnerStatus(ctx, `Archiving ${branch}`, async () => {
 		const repo = await getRepoInfo(pi, ctx.cwd);
 		const defaultMain = await getDefaultMainBranch(pi, repo.mainRoot);
 
@@ -1786,7 +1786,7 @@ async function handleList(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promi
 	}
 
 	if (result.action === "archive") {
-		await withStatus(ctx, `Archiving ${result.item.branch}`, async () => {
+		await withSpinnerStatus(ctx, `Archiving ${result.item.branch}`, async () => {
 			const defaultMain = await getDefaultMainBranch(pi, repo.mainRoot);
 			await archiveWorktree(pi, ctx, repo, result.item.branch, "prompt", defaultMain, result.item.wt);
 		});
