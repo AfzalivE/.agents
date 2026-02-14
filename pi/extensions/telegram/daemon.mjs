@@ -15,7 +15,6 @@ const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
 const TELEGRAM_COMMANDS = [
   { command: "pin", description: "Pair this chat with pi using a 6-digit PIN" },
   { command: "windows", description: "List connected pi windows" },
-  { command: "window", description: "Switch active window: /window N" },
   { command: "esc", description: "Abort current run in active window" },
   { command: "steer", description: "Interrupt active window: /steer <message>" },
   { command: "unpair", description: "Unpair Telegram and disconnect all windows" },
