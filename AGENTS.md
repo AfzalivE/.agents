@@ -37,7 +37,7 @@
 - Use the `homeassistant-ops` skill when you need to operate/refactor a Home Assistant instance.
 - Use the `ms-openapi-explorer` skill when you need to explore Microsoft Graph API v1.0 OpenAPI endpoints, schemas, and permissions.
 - Use the `openscad` skill when you need to create and render OpenSCAD 3D models.
-- Use the `sentry` skill when you need to fetch and analyze Sentry issues, events, and logs.
+- Use the `sentry` skill when you need to fetch and analyze Sentry issues, events, and logs. Prefer the `sentry` CLI (see Tools) over the skill scripts.
 - Use the `web-design` skill when you need to design and implement distinctive, production-ready web interfaces.
 - Use the `update-changelog` skill when you need to update CHANGELOG.md following Keep a Changelog.
 
