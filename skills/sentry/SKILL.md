@@ -1,189 +1,154 @@
 ---
 name: sentry
-description: "Fetch and analyze Sentry issues, events, transactions, and logs. Helps agents debug errors, find root causes, and understand what happened at specific times."
+description: "Sentry CLI for issues, events, logs, and traces. Use when investigating errors, viewing stack traces, streaming logs, or analyzing performance traces."
 ---
 
-# Sentry
+# Sentry CLI
 
-Access Sentry data via the Sentry API for debugging and investigation.
+## Target Syntax
 
-## Requirements
+Most commands accept a target argument:
 
-- Node.js (recommended: Node 18+ so `fetch` is available).
-- A Sentry auth token available to the scripts (by default they read `~/.sentryclirc`).
+```
+sentry <cmd> <org>/<project>   # explicit
+sentry <cmd> <org>/            # all projects in org
+sentry <cmd> <project>         # find project across orgs
+sentry <cmd>                   # auto-detect from DSN/config
+```
 
-## Quick reference
+## Quick Reference
 
 | Task | Command |
 |------|---------|
-| Find errors on a date | `"$HOME/.agents/skills/sentry/scripts/search-events.js" --org X --start 2025-12-23T15:00:00 --level error` |
-| List open issues | `"$HOME/.agents/skills/sentry/scripts/list-issues.js" --org X --status unresolved` |
-| Get issue details | `"$HOME/.agents/skills/sentry/scripts/fetch-issue.js" <issue-id-or-url> --latest` |
-| Get event details | `"$HOME/.agents/skills/sentry/scripts/fetch-event.js" <event-id> --org X --project Y` |
-| Search logs | `"$HOME/.agents/skills/sentry/scripts/search-logs.js" --org X --project Y "level:error"` |
+| List unresolved issues | `sentry issues <target>` |
+| View issue details | `sentry issue view <issue>` |
+| AI root cause analysis | `sentry issue explain <issue>` |
+| AI solution plan | `sentry issue plan <issue>` |
+| View specific event | `sentry event view <event-id>` |
+| List logs | `sentry logs <target>` |
+| Stream logs (follow) | `sentry logs -f <target>` |
+| View log entry | `sentry log view <log-id>` |
+| List traces | `sentry traces <target>` |
+| View trace | `sentry trace view <trace-id>` |
+| Raw API call | `sentry api <endpoint>` |
+| Open in browser | Add `-w` to any `view` command |
 
-## Common debugging workflows
+## Issues
 
-### “What went wrong at this time?”
+### List Issues
 
-Find events around a specific timestamp:
-
-```bash
-# Find all events in a 2-hour window
-"$HOME/.agents/skills/sentry/scripts/search-events.js" --org myorg --project backend \
-  --start 2025-12-23T15:00:00 --end 2025-12-23T17:00:00
-
-# Filter to just errors
-"$HOME/.agents/skills/sentry/scripts/search-events.js" --org myorg --start 2025-12-23T15:00:00 \
-  --level error
-
-# Find a specific transaction type
-"$HOME/.agents/skills/sentry/scripts/search-events.js" --org myorg --start 2025-12-23T15:00:00 \
-  --transaction process-incoming-email
+```
+sentry issues [target] [-q query] [-n limit] [-s sort] [--json]
 ```
 
-### “What errors have occurred recently?”
+- **Default limit:** 10
+- **Sort:** `date` (default), `new`, `freq`, `user`
+- **Query:** Sentry search syntax (see query syntax below)
 
-```bash
-# List unresolved errors from last 24 hours
-"$HOME/.agents/skills/sentry/scripts/list-issues.js" --org myorg --status unresolved --level error --period 24h
+### View Issue
 
-# Find high-frequency issues
-"$HOME/.agents/skills/sentry/scripts/list-issues.js" --org myorg --query "times_seen:>50" --sort freq
-
-# Issues affecting users
-"$HOME/.agents/skills/sentry/scripts/list-issues.js" --org myorg --query "is:unresolved has:user" --sort user
+```
+sentry issue view <issue> [--spans depth] [--web] [--json]
 ```
 
-### “Get details about a specific issue/event”
+Issue formats: `<org>/ID`, `<project>-suffix`, `ID`, numeric ID.
+Includes latest event automatically. `--spans` controls span tree depth (default: 3, `all`, `no`).
 
-```bash
-# Get issue with latest stack trace
-"$HOME/.agents/skills/sentry/scripts/fetch-issue.js" 5765604106 --latest
-"$HOME/.agents/skills/sentry/scripts/fetch-issue.js" https://sentry.io/organizations/myorg/issues/123/ --latest
-"$HOME/.agents/skills/sentry/scripts/fetch-issue.js" MYPROJ-123 --org myorg --latest
+### Explain Issue (Seer AI)
 
-# Get specific event with all breadcrumbs
-"$HOME/.agents/skills/sentry/scripts/fetch-event.js" abc123def456 --org myorg --project backend --breadcrumbs
+```
+sentry issue explain <issue> [--force] [--json]
 ```
 
-### “Find events with a specific tag”
+Returns root cause analysis, reproduction steps, relevant code locations.
+`--force` triggers fresh analysis.
 
-```bash
-# Find by custom tag (e.g., thread_id, user_id)
-"$HOME/.agents/skills/sentry/scripts/search-events.js" --org myorg --tag thread_id:th_abc123
+### Plan Fix (Seer AI)
 
-# Find by user email
-"$HOME/.agents/skills/sentry/scripts/search-events.js" --org myorg --query "user.email:*@example.com"
+```
+sentry issue plan <issue> [--cause N] [--force] [--json]
 ```
 
----
+Generates implementation steps. Runs explain first if needed.
+`--cause` selects which root cause to plan for (when multiple exist).
+Requires GitHub integration + code mappings.
 
-## Fetch issue
+## Events
 
-```bash
-"$HOME/.agents/skills/sentry/scripts/fetch-issue.js" <issue-id-or-url> [options]
+```
+sentry event view [<org>/<project>] <event-id> [--spans depth] [--web] [--json]
 ```
 
-Get details about a specific issue (grouped error).
+## Logs
 
-**Accepts:**
-- Issue ID: `5765604106`
-- Issue URL: `https://sentry.io/organizations/sentry/issues/5765604106/`
-- New URL format: `https://myorg.sentry.io/issues/5765604106/`
-- Short ID: `JAVASCRIPT-ABC` (requires `--org`)
+### List/Stream Logs
 
-**Options:**
-- `--latest` include the latest event with full stack trace
-- `--org <org>` organization slug (for short IDs)
-- `--json` output raw JSON
-
----
-
-## Fetch event
-
-```bash
-"$HOME/.agents/skills/sentry/scripts/fetch-event.js" <event-id> --org <org> --project <project> [options]
+```
+sentry logs [target] [-q query] [-n limit] [-f [interval]] [--json]
 ```
 
-**Options:**
-- `--org, -o <org>` organization slug (required)
-- `--project, -p <project>` project slug (required)
-- `--breadcrumbs, -b` show all breadcrumbs (default: last 30)
-- `--spans` show span tree for transactions
-- `--json` output raw JSON
+- **Default limit:** 100, max 1000
+- **Follow:** `-f` (2s default) or `-f 5` (5s interval)
+- **Query:** `level:error`, `message:*timeout*`, etc.
 
----
+### View Log Entry
 
-## Search events (Discover)
-
-```bash
-"$HOME/.agents/skills/sentry/scripts/search-events.js" [options]
+```
+sentry log view [<org>/<project>] <log-id> [--web] [--json]
 ```
 
-**Time range options:**
-- `--period, -t <period>` relative time (24h, 7d, 14d)
-- `--start <datetime>` start time (ISO 8601: 2025-12-23T15:00:00)
-- `--end <datetime>` end time (ISO 8601)
+## Traces
 
-**Filter options:**
-- `--org, -o <org>` organization slug (required)
-- `--project, -p <project>` project slug or ID
-- `--query, -q <query>` Discover search query
-- `--transaction <name>` transaction name filter
-- `--tag <key:value>` tag filter (repeatable)
-- `--level <level>` level filter (error, warning, info)
-- `--limit, -n <n>` max results (default: 25, max: 100)
-- `--fields <fields>` comma-separated fields to include
+### List Traces
 
-**Query syntax (Discover):**
 ```
-transaction:process-*     Wildcard transaction match
-level:error               Filter by level
-user.email:foo@bar.com    Filter by user
-environment:production    Filter by environment
-has:stack.filename        Has stack trace
+sentry traces [target] [-q query] [-n limit] [-s sort] [--json]
 ```
 
----
+- **Default limit:** 20, max 1000
+- **Sort:** `date` (default), `duration`
+- **Query:** `transaction:GET /api/users`, etc.
 
-## List issues
+### View Trace
 
-```bash
-"$HOME/.agents/skills/sentry/scripts/list-issues.js" [options]
+```
+sentry trace view [<org>/<project>] <trace-id> [--spans depth] [--web] [--json]
 ```
 
-**Options:**
-- `--org, -o <org>` organization slug (required)
-- `--project, -p <project>` project slug (repeatable)
-- `--query, -q <query>` issue search query
-- `--status <status>` unresolved, resolved, ignored
-- `--level <level>` error, warning, info, fatal
-- `--period, -t <period>` time period (default: 14d)
-- `--limit, -n <n>` max results (default: 25)
-- `--sort <sort>` date, new, priority, freq, user
-- `--json` output raw JSON
+## Raw API
 
----
-
-## Search logs (Logs Explorer)
-
-```bash
-"$HOME/.agents/skills/sentry/scripts/search-logs.js" [query|url] [options]
+```
+sentry api <endpoint> [-X method] [-F key=value] [-f key=value] [-H header] [--input file] [-i] [--verbose]
 ```
 
-**Options:**
-- `--org, -o <org>` organization slug (required unless URL provided)
-- `--project, -p <project>` filter by project slug or ID
-- `--period, -t <period>` time period (default: 24h)
-- `--limit, -n <n>` max results (default: 100, max: 1000)
-- `--json` output raw JSON
+Endpoint is relative to `/api/0/`. Auth handled automatically.
 
----
+Field syntax: `key=value`, `key[sub]=value` (nested), `key[]=value` (array append).
 
-## Tips
+## Admin
 
-1. Start broad (time window + simple query), then drill into a single event/issue.
-2. Use `--breadcrumbs` on `fetch-event.js` for the full lead-up to an error.
-3. Use `list-issues.js --sort freq` to find recurring problems.
-4. Use tags (`request_id`, `user_id`, etc.) to correlate events.
+| Command | Purpose |
+|---------|---------|
+| `sentry auth status` | Check auth + list orgs |
+| `sentry auth login` | Authenticate |
+| `sentry auth token` | Print token for scripts |
+| `sentry orgs` | List orgs |
+| `sentry projects [org]` | List projects (optional `--platform` filter) |
+| `sentry teams [org]` | List teams |
+| `sentry repos [org]` | List repos |
+
+## Query Syntax
+
+```
+is:unresolved              Status filter
+is:resolved / is:ignored
+level:error                Level: error, warning, info, fatal
+assigned:me                Assignment
+times_seen:>100            Frequency
+firstSeen:+7d              First seen > 7 days ago
+lastSeen:-24h              Last seen within 24h
+has:user                   Has user context
+error.handled:0            Unhandled errors
+user.email:*@example.com   User filter
+transaction:GET /api/*     Transaction filter
+```
