@@ -7,6 +7,7 @@ Reusable agent harness shared across Codex, Claude, and Pi. Everything lives her
 ```
 AGENTS.md              Shared base instructions (symlinked into each agent folder)
 skills/                Skill source of truth (SKILL.md + optional scripts/assets)
+agent-brain/           Long-term memory vault (Obsidian, kept in a separate private repo)
 pi/extensions/         Pi-specific extensions
 pi/agent/*.json        Repo-managed Pi JSON defaults
 bin/setup              Set up selected Codex, Claude, and Pi configuration, skills, extensions, and dependencies
@@ -40,6 +41,7 @@ By default it sets up all agents. Pass `--codex`, `--claude`, and/or `--pi` to l
 | Skill | Description |
 |-------|-------------|
 | `browser-tools` | Interactive browser automation via Chrome DevTools Protocol |
+| `gh` | GitHub CLI reference for issues, PRs, Actions, search, and raw API |
 | `git-clean-history` | Reimplement a branch on a fresh branch off `main` with a clean commit history |
 | `git-commit` | Tidy, focused commits with clear rationale in messages |
 | `git-worktree` | Manage git worktrees for multiple branches in separate directories |
@@ -47,9 +49,12 @@ By default it sets up all agents. Pass `--codex`, `--claude`, and/or `--pi` to l
 | `ms-openapi-explorer` | Explore Microsoft Graph v1.0 OpenAPI endpoints, schemas, and permissions |
 | `openscad` | Create and render OpenSCAD 3D models, export STL |
 | `oracle` | Second opinion from another LLM for debugging, refactors, design, or code reviews |
-| `sentry` | Fetch and analyze Sentry issues, events, and logs |
+| `qmd` | Local semantic search engine for markdown knowledge bases |
+| `sentry` | Sentry CLI reference for issues, events, logs, and traces |
 | `update-changelog` | Update CHANGELOG.md following Keep a Changelog |
 | `web-design` | Distinctive, production-ready web interfaces |
+
+## Pi Extensions
 
 ## Pi Extensions
 
@@ -75,3 +80,30 @@ By default it sets up all agents. Pass `--codex`, `--claude`, and/or `--pi` to l
 | todo | `/todo` | Todoist-backed tasks with offline outbox sync for single or multi-session work |
 | websearch |  | Web search via Gemini, OpenAI, or Claude, leveraging Pi or browser session credentials |
 | worktree | `/worktree` | Create, list, and archive git worktrees, optionally opening them in a new terminal or tmux pane |
+
+## Brain
+
+The `agent-brain/` directory is an Obsidian vault that serves as long-term memory across sessions. It holds user-specific context — preferences, project notes, environment details, accumulated debugging insights — while general knowledge (CLI references, skill definitions) lives in `skills/`.
+
+The brain is not included in this repo. To set up your own:
+
+```bash
+mkdir -p agent-brain
+```
+
+Then create these starter files:
+
+```
+agent-brain/
+  Index.md              Central hub linking all topic pages
+  Preferences.md        Your workflow and code style preferences
+  Conventions.md        Git, code, and vault conventions
+  Environment.md        Machine setup, key paths, repo structure
+  Tools & Skills.md     User-specific tool context (accounts, orgs, API keys)
+  Projects MOC.md       Project notes, architecture, key decisions
+  Patterns.md           Proven coding patterns and idioms
+  Troubleshooting.md    Debugging insights and recurring fixes
+  Decisions Log.md      Architectural decisions with rationale
+```
+
+The agent will read and update these files as it learns. Keep the vault in a separate private repo if you don't want personal context in a public repo — just clone/symlink it into `agent-brain/`.

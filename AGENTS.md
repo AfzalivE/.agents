@@ -41,6 +41,21 @@
 - Use the `web-design` skill when you need to design and implement distinctive, production-ready web interfaces.
 - Use the `update-changelog` skill when you need to update CHANGELOG.md following Keep a Changelog.
 
+## Brain
+
+Long-term memory is stored in an Obsidian vault at `~/.agents/agent-brain/`. Consult it when prior context would help, and update it when you learn something worth preserving across sessions.
+
+- `Index.md` — Central hub linking all topics
+- `Projects MOC.md` — Project notes, architecture, and key decisions
+- `Preferences.md` — User workflow and code style preferences
+- `Patterns.md` — Proven coding patterns and idioms
+- `Troubleshooting.md` — Debugging insights and recurring fixes
+- `Tools & Skills.md` — Skill inventory and usage tips
+- `Decisions Log.md` — Architectural decisions with rationale
+- `Environment.md` — Machine setup and key paths
+- `Conventions.md` — Git, code, and vault conventions
+
+
 ## Tools
 
 - Prefer `gh` to access GitHub issues, pull requests, etc.
