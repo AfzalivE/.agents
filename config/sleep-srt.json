@@ -1,0 +1,11 @@
+{
+  "network": {
+    "allowedDomains": ["*.anthropic.com"],
+    "deniedDomains": []
+  },
+  "filesystem": {
+    "denyRead": [],
+    "allowWrite": ["~/.agents"],
+    "denyWrite": []
+  }
+}

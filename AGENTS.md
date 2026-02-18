@@ -40,6 +40,7 @@
 - Use the `sentry` skill when you need to fetch and analyze Sentry issues, events, and logs. Prefer the `sentry` CLI (see Tools) over the skill scripts.
 - Use the `web-design` skill when you need to design and implement distinctive, production-ready web interfaces.
 - Use the `update-changelog` skill when you need to update CHANGELOG.md following Keep a Changelog.
+- Use the `sleep` skill for nightly vault maintenance — consolidation, reorganization, and memory weakening.
 
 ## Brain
 
