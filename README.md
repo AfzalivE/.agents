@@ -52,6 +52,6 @@ Skills and `AGENTS.md` are **symlinked** from this repo into each agent's config
 | `review` | `/review` | Review PRs, branches, commits, or uncommitted changes |
 | `sandbox` | `/sandbox` | OS-level sandboxing for bash commands with runtime overrides |
 | `session-breakdown` | `/session-breakdown` | Usage stats and contribution-style calendar |
-| `todos` | `/todo` | Todoist-backed tasks with offline outbox sync for single or multi-session work |
+| `todo` | `/todo` | Todoist-backed tasks with offline outbox sync for single or multi-session work |
 | `git-checkpoint` | _automatic_ | Stash checkpoints each turn so `/fork` can restore code state |
 | `notify` | _automatic_ | Terminal notification when the agent is waiting for input |
