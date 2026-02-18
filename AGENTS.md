@@ -64,3 +64,7 @@ Key files: `Index.md`, `Projects MOC.md`, `Preferences.md`, `Patterns.md`, `Trou
 
 - Prefer `gh` to access GitHub issues, pull requests, etc.
 - Use `git log` and `git blame` when historical context would help.
+- Use the `sentry` skill when you need to investigate Sentry issues, events, logs, or traces.
+- Use the `qmd` skill when you need to search across indexed markdown knowledge bases.
+- Use the `tw` CLI when you need to read or respond to Twist messages, threads, DMs, or search Twist content.
+- Use the `td` CLI when you need to manage Todoist tasks, projects, labels, or view activity. Agents: use `td task add` (not `td add`).
