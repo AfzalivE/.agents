@@ -5,7 +5,7 @@
   },
   "filesystem": {
     "denyRead": [],
-    "allowWrite": ["~/.agents"],
+    "allowWrite": ["~/.agents/agent-brain", "/private/var/folders", "/private/tmp", "/tmp", "~/.claude"],
     "denyWrite": []
   }
 }

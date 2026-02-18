@@ -44,17 +44,20 @@
 
 ## Brain
 
-Long-term memory is stored in an Obsidian vault at `~/.agents/agent-brain/`. Consult it when prior context would help, and update it when you learn something worth preserving across sessions.
+Long-term memory is stored in an Obsidian vault at `~/.agents/agent-brain/`. This is the shared brain across every project and session — treat it as your persistent context about the user, their projects, and how they work.
 
-- `Index.md` — Central hub linking all topics
-- `Projects MOC.md` — Project notes, architecture, and key decisions
-- `Preferences.md` — User workflow and code style preferences
-- `Patterns.md` — Proven coding patterns and idioms
-- `Troubleshooting.md` — Debugging insights and recurring fixes
-- `Tools & Skills.md` — Skill inventory and usage tips
-- `Decisions Log.md` — Architectural decisions with rationale
-- `Environment.md` — Machine setup and key paths
-- `Conventions.md` — Git, code, and vault conventions
+**Read** the vault (start from `Index.md`) when prior context would help — especially at the start of non-trivial work.
+
+**Write** to the vault proactively. Don't wait for an explicit ask. Write when:
+- You learn something about a project's architecture, conventions, or quirks
+- The user expresses a preference or corrects your approach
+- You solve a tricky debugging problem (root cause + fix)
+- An architectural decision is made and the rationale matters
+- You discover environment details, key paths, or tooling nuances
+
+Do not write in-progress or branch-specific state — use per-project auto-memory for that. The brain is for stable, cross-session knowledge.
+
+Key files: `Index.md`, `Projects MOC.md`, `Preferences.md`, `Patterns.md`, `Troubleshooting.md`, `Tools & Skills.md`, `Decisions Log.md`, `Environment.md`, `Conventions.md`
 
 
 ## Tools

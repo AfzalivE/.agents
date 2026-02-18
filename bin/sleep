@@ -220,23 +220,41 @@ if ! command -v srt &>/dev/null; then
   exit 1
 fi
 
-echo "Invoking Claude inside srt sandbox for vault maintenance..."
+LOG_DIR="${AGENTS_DIR}/logs"
+mkdir -p "$LOG_DIR"
+LOG_FILE="${LOG_DIR}/sleep-$(date +%Y-%m-%d).log"
 
-cd "$AGENTS_DIR"
+echo "Invoking Claude inside srt sandbox for vault maintenance..."
+echo "Log: $LOG_FILE"
+
+cd "$VAULT_DIR"
 
 # Prevent nested Claude from detecting it's inside an outer Claude Code session,
 # which changes its behavior (e.g., tool availability, permission handling).
 unset CLAUDECODE 2>/dev/null || true
 
-srt --settings "$SRT_SETTINGS" \
-  claude -p \
-  --append-system-prompt "$(printf 'SLEEP_AUDIT:\n%s' "$audit")" \
-  --dangerously-skip-permissions \
-  --allowedTools "Read,Edit,Write,Glob,Grep,Skill,Bash(git:*,mv:*,mkdir:*)" \
-  --model sonnet \
-  --max-budget-usd 0.50 \
-  "Run the /sleep skill to perform vault maintenance based on the SLEEP_AUDIT in your system prompt. Work autonomously — plan changes, apply them, and commit. If nothing meaningful needs changing, say so and exit." \
-  2>&1
+# Pipe prompt via stdin to avoid srt's shell re-interpreting special characters
+# in the audit text (parentheses, etc.). Double-escape allowedTools parens/globs
+# so they survive srt's bash -c layer.
+{
+  echo "=== Sleep run: $(date) ==="
+  echo ""
+  echo "$audit"
+  echo ""
+  printf '%s\n\nSLEEP_AUDIT:\n%s' \
+    "Run the /sleep skill to perform vault maintenance based on the SLEEP_AUDIT below. Work autonomously — plan changes, apply them, and commit. If nothing meaningful needs changing, say so and exit." \
+    "$audit" \
+  | srt --settings "$SRT_SETTINGS" \
+    claude -p \
+    --dangerously-skip-permissions \
+    --allowedTools "Read,Edit,Write,Glob,Grep,Bash\(git:*,mv:*,mkdir:*\)" \
+    --model sonnet \
+    --max-budget-usd 0.50 \
+    --verbose \
+    2>&1
+  echo ""
+  echo "=== Finished: $(date) ==="
+} 2>&1 | tee -a "$LOG_FILE"
 
 echo ""
 echo "Sleep maintenance complete."
