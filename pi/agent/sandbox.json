@@ -42,7 +42,8 @@
       ".",
       "/tmp",
       "~/.ssh",
-      "~/.gnupg"
+      "~/.gnupg",
+      "~/.cache/pre-commit"
     ],
     "denyWrite": [
       ".env",
