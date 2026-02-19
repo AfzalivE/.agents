@@ -30,8 +30,11 @@
     "deniedDomains": [],
     "allowLocalBinding": true,
     "allowUnixSockets": [
+      "/tmp",
+      "/private/tmp",
       "~/.gnupg",
-      "/private/tmp"
+      "~/.orbstack/run/docker.sock",
+      "/var/run/docker.sock"
     ]
   },
   "filesystem": {
@@ -41,9 +44,11 @@
     "allowWrite": [
       ".",
       "/tmp",
+      "/private/tmp",
       "~/.ssh",
       "~/.gnupg",
-      "~/.cache/pre-commit"
+      "~/.cache",
+      "~/.docker"
     ],
     "denyWrite": [
       ".env",
