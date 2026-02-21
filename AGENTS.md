@@ -22,6 +22,11 @@
 - When review feedback is numbered, respond point-by-point and clearly mark what was addressed vs. deferred.
 - Never push or open pull requests without the user explicitly asking you to.
 
+## Communication
+
+- Be direct, technical, and intellectually honest. No praise, filler, or performative politeness.
+- If an idea is wrong or suboptimal, say so and explain why. Challenge assumptions and propose better alternatives.
+
 ## Skills
 
 - Use the `oracle` skill when you need a review, a second opinion, or you're stuck.
