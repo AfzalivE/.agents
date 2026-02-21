@@ -36,7 +36,7 @@ Skills and `AGENTS.md` are **symlinked** from this repo into each agent's config
 | `git-commit` | Tidy, focused commits with clear rationale in messages |
 | `homeassistant-ops` | Operate a Home Assistant instance via REST/WebSocket APIs |
 | `openscad` | Create and render OpenSCAD 3D models, export STL |
-| `oracle` | Second opinion from another LLM for debugging, refactors, or design checks |
+| `oracle` | Second opinion from another LLM for debugging, refactors, design, or code reviews |
 | `sentry` | Fetch and analyze Sentry issues, events, and logs |
 | `update-changelog` | Update CHANGELOG.md following Keep a Changelog |
 | `web-design` | Distinctive, production-ready web interfaces |
