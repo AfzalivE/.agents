@@ -249,7 +249,7 @@ unset CLAUDECODE 2>/dev/null || true
     --dangerously-skip-permissions \
     --allowedTools "Read,Edit,Write,Glob,Grep,Bash\(git:*,mv:*,mkdir:*\)" \
     --model sonnet \
-    --max-budget-usd 0.50 \
+    --max-budget-usd 1.00 \
     --verbose \
     2>&1
   echo ""

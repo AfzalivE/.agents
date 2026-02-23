@@ -46,7 +46,12 @@
 
 Long-term memory is stored in an Obsidian vault at `~/.agents/agent-brain/`. This is the shared brain across every project and session — treat it as your persistent context about the user, their projects, and how they work.
 
-**Read** the vault (start from `Index.md`) when prior context would help — especially at the start of non-trivial work.
+**Read** the vault at the start of every non-trivial task. This is not optional — the vault exists so you don't re-discover what's already known.
+- Always start from `Index.md` to orient yourself.
+- Working on a known project? Read its project note (linked from `Projects MOC.md`).
+- Debugging? Read `Troubleshooting.md` and any linked deep-dive notes.
+- Making an architectural decision? Read `Decisions Log.md` and `Patterns.md`.
+- Unsure if relevant context exists? Read `Index.md` anyway — it's 22 lines.
 
 **Write** to the vault proactively. Don't wait for an explicit ask. Write when:
 - You learn something about a project's architecture, conventions, or quirks
