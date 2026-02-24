@@ -42,7 +42,9 @@ By default it sets up all agents. Pass `--codex`, `--claude`, and/or `--pi` to l
 | `browser-tools` | Interactive browser automation via Chrome DevTools Protocol |
 | `git-clean-history` | Reimplement a branch on a fresh branch off `main` with a clean commit history |
 | `git-commit` | Tidy, focused commits with clear rationale in messages |
+| `git-worktree` | Manage git worktrees for multiple branches in separate directories |
 | `homeassistant-ops` | Operate a Home Assistant instance via REST/WebSocket APIs |
+| `ms-openapi-explorer` | Explore Microsoft Graph v1.0 OpenAPI endpoints, schemas, and permissions |
 | `openscad` | Create and render OpenSCAD 3D models, export STL |
 | `oracle` | Second opinion from another LLM for debugging, refactors, design, or code reviews |
 | `sentry` | Fetch and analyze Sentry issues, events, and logs |
