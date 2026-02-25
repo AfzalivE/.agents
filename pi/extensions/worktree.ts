@@ -980,7 +980,7 @@ function spawnGhosttyFresh(cwd: string, onError?: (error: Error) => void): void 
 
   if (process.platform === "darwin") {
     const envPath = process.env.PATH;
-    const args: string[] = ["-a", "Ghostty"];
+    const args: string[] = ["-n", "-a", "Ghostty"];
 
     if (envPath) {
       args.push("--env", `PATH=${envPath}`);
