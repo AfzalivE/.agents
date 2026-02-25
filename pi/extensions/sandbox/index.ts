@@ -650,6 +650,8 @@ function loadConfig(cwd: string, overrideConfigPath?: string): LoadedSandboxConf
       paths.push({ label: "Global", path: globalConfigPath, status: "parse-error" });
       console.error(`Warning: Could not parse ${globalConfigPath}: ${e}`);
     }
+  } else {
+    console.log("globalConfig not found");
   }
 
   if (existsSync(projectConfigPath)) {
@@ -660,6 +662,8 @@ function loadConfig(cwd: string, overrideConfigPath?: string): LoadedSandboxConf
       paths.push({ label: "Project", path: projectConfigPath, status: "parse-error" });
       console.error(`Warning: Could not parse ${projectConfigPath}: ${e}`);
     }
+  } else {
+    console.log("projectConfig not found");
   }
 
   const merged = deepMerge(deepMerge(DEFAULT_CONFIG, globalConfig), projectConfig);

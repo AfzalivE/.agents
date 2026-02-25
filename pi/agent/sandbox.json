@@ -35,7 +35,8 @@
       "twist.com",
       "*.twist.com",
       "doist.com",
-      "*.doist.com"
+      "*.doist.com",
+      "*.gradle.org"
     ],
     "deniedDomains": [],
     "allowLocalBinding": true,
@@ -70,7 +71,8 @@
       "~/.npm",
       "~/.pi/agent/*.lock",
       "~/.codex*",
-      "~/.claude*"
+      "~/.claude*",
+      "~/.gradle"
     ]
   },
   "enableWeakerNestedSandbox": false,
