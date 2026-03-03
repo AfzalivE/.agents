@@ -42,5 +42,4 @@
 ## Tools
 
 - Prefer `gh` to access GitHub issues, pull requests, etc.
-- Prefer `rg` for text search and `rg --files` for finding files.
 - Use `git log` and `git blame` when historical context would help.
