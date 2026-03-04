@@ -14,12 +14,12 @@ bin/sync               Symlink everything into Codex, Claude, and Pi config dirs
 
 ## Syncing
 
-Skills and `AGENTS.md` are **symlinked** from this repo into each agent's config:
+`AGENTS.md` is symlinked into each agent config. Skills are symlinked to Claude, while Codex and Pi auto-discover them from `~/.agents/skills`.
 
 | Content | Codex | Claude | Pi |
 |---------|-------|--------|----|
 | Instructions | `~/.codex/AGENTS.md` | `~/.claude/CLAUDE.md` | `~/.pi/agent/AGENTS.md` |
-| Skills | `~/.codex/skills/` | `~/.claude/skills/` | `~/.pi/agent/skills/` |
+| Skills | `~/.agents/skills` | `~/.claude/skills/` | `~/.agents/skills` |
 | Extensions | — | — | `~/.pi/agent/extensions/` |
 | Sandbox config | — | — | `~/.pi/agent/sandbox.json` |
 

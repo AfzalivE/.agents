@@ -1,18 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Sync ~/.agents into various coding agents via symlinks.
+# Sync ~/.agents into coding agents via symlinks.
 #
 # Source of truth:
-#   - ~/.agents/skills                    (Agent Skills standard)
 #   - ~/.agents/AGENTS.md                 (shared instructions)
+#   - ~/.agents/skills                    (Agent Skills standard)
 #   - ~/.agents/pi/extensions             (Pi-specific extensions)
 #   - ~/.agents/pi/agent/sandbox.json     (Pi sandbox config)
 #
 # Targets:
-#   - Codex:  ~/.codex/skills + ~/.codex/AGENTS.md
-#   - Claude: ~/.claude/skills + ~/.claude/CLAUDE.md
-#   - Pi:     ~/.pi/agent/skills + ~/.pi/agent/AGENTS.md + ~/.pi/agent/extensions + ~/.pi/agent/sandbox.json
+#   - Codex:  ~/.codex/AGENTS.md
+#   - Claude: ~/.claude/CLAUDE.md + ~/.claude/skills
+#   - Pi:     ~/.pi/agent/AGENTS.md + ~/.pi/agent/extensions + ~/.pi/agent/sandbox.json
+#
+# Notes:
+#   - Pi and Codex auto-discover skills from ~/.agents/skills.
+#   - Pi does not auto-discover ~/.agents/AGENTS.md as global context.
 
 AGENTS_SKILLS_DIR="${HOME}/.agents/skills"
 AGENTS_INSTRUCTIONS_FILE="${HOME}/.agents/AGENTS.md"
@@ -20,10 +24,8 @@ AGENTS_PI_EXTENSIONS_DIR="${HOME}/.agents/pi/extensions"
 AGENTS_PI_AGENT_DIR="${HOME}/.agents/pi/agent"
 AGENTS_PI_SANDBOX_FILE="${AGENTS_PI_AGENT_DIR}/sandbox.json"
 
-CODEX_SKILLS_DIR="${HOME}/.codex/skills"
 CLAUDE_SKILLS_DIR="${HOME}/.claude/skills"
 PI_AGENT_DIR="${HOME}/.pi/agent"
-PI_SKILLS_DIR="${PI_AGENT_DIR}/skills"
 PI_EXTENSIONS_DIR="${PI_AGENT_DIR}/extensions"
 PI_SANDBOX_FILE="${PI_AGENT_DIR}/sandbox.json"
 
@@ -48,11 +50,12 @@ Options:
   --prune     Remove skills/extensions from agent folders that are not present in ~/.agents
 
 Notes:
-  - ~/.codex/skills/.system is never touched.
   - ~/.agents/AGENTS.md is symlinked to:
       - ~/.codex/AGENTS.md
       - ~/.claude/CLAUDE.md
       - ~/.pi/agent/AGENTS.md
+  - ~/.agents/skills are symlinked only to ~/.claude/skills.
+  - Codex and Pi auto-discover skills from ~/.agents/skills.
   - Pi extensions are synced from ~/.agents/pi/extensions to ~/.pi/agent/extensions.
   - Pi sandbox config is symlinked from ~/.agents/pi/agent/sandbox.json to ~/.pi/agent/sandbox.json.
 EOF
@@ -88,10 +91,8 @@ mkdir -p \
   "${AGENTS_SKILLS_DIR}" \
   "${AGENTS_PI_EXTENSIONS_DIR}" \
   "${AGENTS_PI_AGENT_DIR}" \
-  "${CODEX_SKILLS_DIR}" \
   "${CLAUDE_SKILLS_DIR}" \
   "${PI_AGENT_DIR}" \
-  "${PI_SKILLS_DIR}" \
   "${PI_EXTENSIONS_DIR}"
 
 skills=()
@@ -133,9 +134,7 @@ plan_symlink() {
 plan_remove() {
   local path="$1"
   case "${path}" in
-    "${CODEX_SKILLS_DIR}"/* | \
     "${CLAUDE_SKILLS_DIR}"/* | \
-    "${PI_SKILLS_DIR}"/* | \
     "${PI_EXTENSIONS_DIR}"/* | \
     "${CODEX_INSTRUCTIONS_FILE}" | \
     "${CLAUDE_INSTRUCTIONS_FILE}" | \
@@ -153,7 +152,7 @@ plan_remove() {
 # --- Skills ---
 for skill_name in "${skills[@]}"; do
   skill_dir="${AGENTS_SKILLS_DIR}/${skill_name}"
-  for target_root in "${CODEX_SKILLS_DIR}" "${CLAUDE_SKILLS_DIR}" "${PI_SKILLS_DIR}"; do
+  for target_root in "${CLAUDE_SKILLS_DIR}"; do
     target="${target_root}/${skill_name}"
 
     if [[ -L "${target}" ]]; then
@@ -256,8 +255,8 @@ done
 
 # --- Prune ---
 if [[ "${PRUNE}" -eq 1 ]]; then
-  # Prune skills
-  for target_root in "${CODEX_SKILLS_DIR}" "${CLAUDE_SKILLS_DIR}" "${PI_SKILLS_DIR}"; do
+  # Prune Claude skills
+  for target_root in "${CLAUDE_SKILLS_DIR}"; do
     for entry in "${target_root}"/*; do
       [[ -e "${entry}" ]] || continue
       base="$(basename "${entry}")"
