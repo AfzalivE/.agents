@@ -24,7 +24,7 @@ import * as path from "node:path";
 
 const STATUS_KEY = "worktree";
 const TERMINAL_FLAG = "worktree-term";
-const TMUX_LAYOUT_FLAG = "tmux-layout";
+const TMUX_LAYOUT_FLAG = "worktree-tmux-layout";
 
 type PromptStatus = "completed" | "error";
 type TmuxLayout = "window" | "split-right" | "split-down";
@@ -1898,7 +1898,7 @@ export default function worktreeExtension(pi: ExtensionAPI) {
 
   pi.registerFlag(TMUX_LAYOUT_FLAG, {
     description:
-      "When inside tmux, choose where branch/worktree sessions open: window (default), split-right, or split-down.",
+      "When inside tmux, choose where worktree sessions open: window (default), split-right, or split-down.",
     type: "string",
   });
 

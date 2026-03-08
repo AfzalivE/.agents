@@ -4,7 +4,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-cod
 import { SessionManager } from "@mariozechner/pi-coding-agent"
 
 const TERMINAL_FLAG = "branch-term"
-const TMUX_LAYOUT_FLAG = "tmux-layout"
+const TMUX_LAYOUT_FLAG = "branch-tmux-layout"
 
 type TmuxLayout = "window" | "split-right" | "split-down"
 
@@ -188,7 +188,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.registerFlag(TMUX_LAYOUT_FLAG, {
     description:
-      "When inside tmux, choose where branch/worktree sessions open: window (default), split-right, or split-down.",
+      "When inside tmux, choose where branch sessions open: window (default), split-right, or split-down.",
     type: "string",
   })
 
