@@ -71,6 +71,42 @@ interface SandboxConfig extends SandboxRuntimeConfig {
   mode?: PromptMode;
 }
 
+type SandboxBlockKind = "filesystem" | "network" | "init" | "runtime";
+type SandboxBlockReason =
+  | "explicit-deny-read"
+  | "explicit-deny-write"
+  | "explicit-deny-domain"
+  | "missing-allow-write"
+  | "missing-allowed-domain"
+  | "unsupported-platform"
+  | "init-failed"
+  | "already-approved-still-failed"
+  | "unknown";
+type SandboxConfigPathStatus = "loaded" | "parse-error";
+type SandboxConfigPathLabel = "Global" | "Project";
+
+interface SandboxBlock {
+  timestamp: number;
+  kind: SandboxBlockKind;
+  reason: SandboxBlockReason;
+  target?: string;
+  command?: string;
+  cwd?: string;
+  summary: string;
+  suggestedCommand?: string;
+}
+
+interface SandboxConfigPath {
+  label: SandboxConfigPathLabel;
+  path: string;
+  status: SandboxConfigPathStatus;
+}
+
+interface LoadedSandboxConfig {
+  config: SandboxConfig;
+  paths: SandboxConfigPath[];
+}
+
 const DEFAULT_PROMPT_MODE: PromptMode = "interactive";
 
 const DEFAULT_CONFIG: SandboxConfig = {
@@ -99,6 +135,7 @@ const DEFAULT_CONFIG: SandboxConfig = {
 };
 
 const STATUS_KEY = "sandbox";
+const SANDBOX_BLOCK_LIMIT = 50;
 
 type PromptStatus = "completed" | "error";
 
@@ -168,6 +205,7 @@ function showHelp(ctx: ExtensionContext): void {
     "  /sandbox enable",
     "  /sandbox disable",
     "  /sandbox show",
+    "  /sandbox doctor",
     "  /sandbox mode <interactive|non-interactive>",
     "  /sandbox network <allow|deny> <add|remove> <domain>",
     "  /sandbox filesystem <deny-read|allow-write|deny-write> <add|remove> <path>",
@@ -214,17 +252,20 @@ function coerceStringArray(value: unknown, fallback: string[], field: string): s
   return cleaned;
 }
 
-function loadConfig(cwd: string): SandboxConfig {
+function loadConfig(cwd: string): LoadedSandboxConfig {
   const projectConfigPath = join(cwd, ".pi", "sandbox.json");
   const globalConfigPath = join(homedir(), ".pi", "agent", "sandbox.json");
 
   let globalConfig: Partial<SandboxConfig> = {};
   let projectConfig: Partial<SandboxConfig> = {};
+  const paths: SandboxConfigPath[] = [];
 
   if (existsSync(globalConfigPath)) {
     try {
       globalConfig = JSON.parse(readFileSync(globalConfigPath, "utf-8"));
+      paths.push({ label: "Global", path: globalConfigPath, status: "loaded" });
     } catch (e) {
+      paths.push({ label: "Global", path: globalConfigPath, status: "parse-error" });
       console.error(`Warning: Could not parse ${globalConfigPath}: ${e}`);
     }
   }
@@ -232,29 +273,49 @@ function loadConfig(cwd: string): SandboxConfig {
   if (existsSync(projectConfigPath)) {
     try {
       projectConfig = JSON.parse(readFileSync(projectConfigPath, "utf-8"));
+      paths.push({ label: "Project", path: projectConfigPath, status: "loaded" });
     } catch (e) {
+      paths.push({ label: "Project", path: projectConfigPath, status: "parse-error" });
       console.error(`Warning: Could not parse ${projectConfigPath}: ${e}`);
     }
   }
 
   const merged = deepMerge(deepMerge(DEFAULT_CONFIG, globalConfig), projectConfig);
 
-  // Sanitize config.
   return {
-    ...merged,
-    enabled: typeof merged.enabled === "boolean" ? merged.enabled : DEFAULT_CONFIG.enabled,
-    mode: normalizePromptMode(merged.mode),
-    network: {
-      ...merged.network,
-      allowedDomains: coerceStringArray(merged.network?.allowedDomains, DEFAULT_CONFIG.network.allowedDomains, "network.allowedDomains"),
-      deniedDomains: coerceStringArray(merged.network?.deniedDomains, DEFAULT_CONFIG.network.deniedDomains, "network.deniedDomains"),
+    config: {
+      ...merged,
+      enabled: typeof merged.enabled === "boolean" ? merged.enabled : DEFAULT_CONFIG.enabled,
+      mode: normalizePromptMode(merged.mode),
+      network: {
+        ...merged.network,
+        allowedDomains: coerceStringArray(
+          merged.network?.allowedDomains,
+          DEFAULT_CONFIG.network.allowedDomains,
+          "network.allowedDomains",
+        ),
+        deniedDomains: coerceStringArray(
+          merged.network?.deniedDomains,
+          DEFAULT_CONFIG.network.deniedDomains,
+          "network.deniedDomains",
+        ),
+      },
+      filesystem: {
+        ...merged.filesystem,
+        denyRead: coerceStringArray(merged.filesystem?.denyRead, DEFAULT_CONFIG.filesystem.denyRead, "filesystem.denyRead"),
+        allowWrite: coerceStringArray(
+          merged.filesystem?.allowWrite,
+          DEFAULT_CONFIG.filesystem.allowWrite,
+          "filesystem.allowWrite",
+        ),
+        denyWrite: coerceStringArray(
+          merged.filesystem?.denyWrite,
+          DEFAULT_CONFIG.filesystem.denyWrite,
+          "filesystem.denyWrite",
+        ),
+      },
     },
-    filesystem: {
-      ...merged.filesystem,
-      denyRead: coerceStringArray(merged.filesystem?.denyRead, DEFAULT_CONFIG.filesystem.denyRead, "filesystem.denyRead"),
-      allowWrite: coerceStringArray(merged.filesystem?.allowWrite, DEFAULT_CONFIG.filesystem.allowWrite, "filesystem.allowWrite"),
-      denyWrite: coerceStringArray(merged.filesystem?.denyWrite, DEFAULT_CONFIG.filesystem.denyWrite, "filesystem.denyWrite"),
-    },
+    paths,
   };
 }
 
@@ -524,7 +585,7 @@ async function handleFilesystemViolation(options: {
   pendingPrompts?: Map<string, Promise<string | null>>;
   applyRuntimeConfigForSession?: (ctx: ExtensionContext, runtimeConfig: SandboxRuntimeConfig) => void;
   existingViolationCount?: number;
-  recordBlock?: (block?: unknown) => void;
+  recordBlock?: (block: SandboxBlock) => void;
 }): Promise<string | null> {
   const {
     pi,
@@ -538,6 +599,7 @@ async function handleFilesystemViolation(options: {
     pendingPrompts,
     applyRuntimeConfigForSession,
     existingViolationCount,
+    recordBlock,
   } = options;
   const violations = detectFilesystemViolations(output, rawOutput, existingViolationCount ?? 0);
   if (violations.length === 0) return null;
@@ -553,6 +615,19 @@ async function handleFilesystemViolation(options: {
   const target = describeFilesystemViolationTarget(violation);
   const allowAction = buildFilesystemAllowAction(runtimeConfig, violation, cwd);
   const allowCommand = allowAction ? buildFilesystemAllowCommand(allowAction) : null;
+  const alreadyApproved = allowAction ? isFilesystemAllowActionAlreadyApplied(runtimeConfig, allowAction) : false;
+  const blockReason = classifyFilesystemBlockReason(runtimeConfig, violation, cwd, alreadyApproved);
+  recordBlock?.({
+    timestamp: Date.now(),
+    kind: "filesystem",
+    reason: blockReason,
+    target: violation.path,
+    command,
+    cwd,
+    summary: describeFilesystemBlockSummary(blockReason, violation),
+    suggestedCommand: allowCommand ?? undefined,
+  });
+
   const commandInfo = `\n[sandbox] Blocked command: ${command}`;
   const retryHint = "\n[sandbox] Retry running the command (or an updated one if there could be side effects).";
 
@@ -563,7 +638,7 @@ async function handleFilesystemViolation(options: {
 
   if (!allowAction || !allowCommand) return summary;
 
-  if (isFilesystemAllowActionAlreadyApplied(runtimeConfig, allowAction)) {
+  if (alreadyApproved) {
     return `[sandbox] Filesystem ${target} is already allowed for this session.${commandInfo}${retryHint}`;
   }
 
@@ -609,7 +684,7 @@ interface SandboxedBashOpsOptions {
   getPromptMode: () => PromptMode;
   getCwd: () => string;
   applyRuntimeConfigForSession: (ctx: ExtensionContext, runtimeConfig: SandboxRuntimeConfig) => void;
-  recordBlock?: (block?: unknown) => void;
+  recordBlock?: (block: SandboxBlock) => void;
 }
 
 interface BashAttemptResult {
@@ -837,6 +912,115 @@ function mutateStringList(values: string[], op: ListOp, value: string): boolean 
   return true;
 }
 
+function classifyFilesystemBlockReason(
+  runtimeConfig: SandboxRuntimeConfig,
+  violation: FilesystemViolation,
+  cwd?: string,
+  alreadyApproved = false,
+): SandboxBlockReason {
+  if (alreadyApproved) return "already-approved-still-failed";
+
+  if (violation.path) {
+    if (inferLiteralRuleMatch(violation.path, runtimeConfig.filesystem.denyWrite, cwd)) {
+      return "explicit-deny-write";
+    }
+    if (inferLiteralRuleMatch(violation.path, runtimeConfig.filesystem.denyRead, cwd)) {
+      return "explicit-deny-read";
+    }
+  }
+
+  if (violation.kind === "write" || violation.kind === "unknown") return "missing-allow-write";
+  return "unknown";
+}
+
+function describeFilesystemBlockSummary(reason: SandboxBlockReason, violation: FilesystemViolation): string {
+  if (reason === "explicit-deny-read") return "filesystem read matched a deny-read rule";
+  if (reason === "explicit-deny-write") return "filesystem write matched a deny-write rule";
+  if (reason === "already-approved-still-failed") {
+    return "filesystem access was previously allowed for this session but is still failing";
+  }
+  if (reason === "missing-allow-write") {
+    return violation.kind === "unknown"
+      ? "filesystem access fell outside the current allow-write paths"
+      : "filesystem write fell outside the current allow-write paths";
+  }
+  return "sandbox blocked filesystem access";
+}
+
+function buildNetworkBlockCommand(reason: SandboxBlockReason, host: string): string | undefined {
+  if (reason === "explicit-deny-domain") {
+    return `/sandbox network deny remove ${escapeSlashCommandArg(host)}`;
+  }
+  if (reason === "missing-allowed-domain") {
+    return `/sandbox network allow add ${escapeSlashCommandArg(host)}`;
+  }
+  return undefined;
+}
+
+function describeNetworkBlockSummary(reason: SandboxBlockReason): string {
+  if (reason === "explicit-deny-domain") return "network access matched a deny list entry";
+  if (reason === "missing-allowed-domain") return "network access target is not in the allowed domain list";
+  return "sandbox blocked network access";
+}
+
+function formatSandboxBlockTimestamp(timestamp: number): string {
+  const date = new Date(timestamp);
+  const hours = `${date.getHours()}`.padStart(2, "0");
+  const minutes = `${date.getMinutes()}`.padStart(2, "0");
+  const seconds = `${date.getSeconds()}`.padStart(2, "0");
+  return `${hours}:${minutes}:${seconds}`;
+}
+
+function describeSandboxRuntimeState(state: SandboxState, promptMode: PromptMode): string {
+  if (state.status === "active") return `active (${promptMode})`;
+  if (state.status === "pending") return "pending";
+  if (state.status === "suspended") return `suspended (${promptMode})`;
+  if (state.status === "bypassed") {
+    return state.reason === "no-sandbox-flag" ? "bypassed (--no-sandbox)" : "bypassed (config disabled)";
+  }
+  return state.reason === "unsupported-platform" ? "blocked (unsupported platform)" : "blocked (init failed)";
+}
+
+function renderSandboxDoctorReport(options: {
+  state: SandboxState;
+  promptMode: PromptMode;
+  configPaths: SandboxConfigPath[];
+  blocks: SandboxBlock[];
+}): string {
+  const { state, promptMode, configPaths, blocks } = options;
+  const lines = ["Sandbox doctor", `- Runtime: ${describeSandboxRuntimeState(state, promptMode)}`];
+
+  if (configPaths.length === 0) {
+    lines.push("- Config paths: (none loaded)");
+  } else {
+    lines.push("- Config paths:");
+    for (const configPath of configPaths) {
+      const status = configPath.status === "loaded" ? "loaded" : "parse error";
+      lines.push(`  - ${configPath.label}: ${configPath.path} (${status})`);
+    }
+  }
+
+  lines.push(`- Events: ${blocks.length}`);
+
+  if (blocks.length === 0) {
+    lines.push("", "- No sandbox events recorded in this session.");
+    return lines.join("\n");
+  }
+
+  for (const block of [...blocks].reverse()) {
+    lines.push(
+      "",
+      `- [${formatSandboxBlockTimestamp(block.timestamp)}] [${block.kind}] ${block.reason}`,
+      ...(block.target ? [`  Target: ${block.target}`] : []),
+      ...(block.command ? [`  Command: ${block.command}`] : []),
+      `  Summary: ${block.summary}`,
+      ...(block.suggestedCommand ? ["  Suggested session fix:", `    ${block.suggestedCommand}`] : []),
+    );
+  }
+
+  return lines.join("\n");
+}
+
 export default function (pi: ExtensionAPI) {
   pi.registerFlag("no-sandbox", {
     description: "Disable OS-level sandboxing for bash commands",
@@ -848,8 +1032,40 @@ export default function (pi: ExtensionAPI) {
   let sandboxState: SandboxState = { status: "pending" };
   let promptMode: PromptMode = DEFAULT_PROMPT_MODE;
   let sessionContext: ExtensionContext | null = null;
+  let sandboxConfigPaths: SandboxConfigPath[] = [];
+  let sandboxBlocks: SandboxBlock[] = [];
 
   const pendingNetworkApprovals = new Map<string, Promise<boolean>>();
+
+  function recordSandboxBlock(block: SandboxBlock): void {
+    sandboxBlocks.push(block);
+    if (sandboxBlocks.length > SANDBOX_BLOCK_LIMIT) {
+      sandboxBlocks.splice(0, sandboxBlocks.length - SANDBOX_BLOCK_LIMIT);
+    }
+  }
+
+  function recordNetworkBlock(reason: SandboxBlockReason, host: string, port?: number): void {
+    const target = port ? `${host}:${port}` : host;
+    recordSandboxBlock({
+      timestamp: Date.now(),
+      kind: "network",
+      reason,
+      target,
+      cwd: sessionCwd,
+      summary: describeNetworkBlockSummary(reason),
+      suggestedCommand: buildNetworkBlockCommand(reason, host),
+    });
+  }
+
+  function recordRuntimeBlock(kind: SandboxBlockKind, reason: SandboxBlockReason, summary: string): void {
+    recordSandboxBlock({
+      timestamp: Date.now(),
+      kind,
+      reason,
+      cwd: sessionCwd,
+      summary,
+    });
+  }
 
   function applyRuntimeConfigForSession(
     ctx: ExtensionContext,
@@ -876,21 +1092,18 @@ export default function (pi: ExtensionAPI) {
           if (!initialConfig) return false;
 
           if (initialConfig.network.allowedDomains.includes(normalizedHost)) return true;
-          if (initialConfig.network.deniedDomains.includes(normalizedHost)) return false;
+          if (initialConfig.network.deniedDomains.includes(normalizedHost)) {
+            recordNetworkBlock("explicit-deny-domain", normalizedHost, port);
+            return false;
+          }
 
+          const suggestedCommand = buildNetworkBlockCommand("missing-allowed-domain", normalizedHost);
           const ctx = sessionContext;
           if (promptMode === "non-interactive" || !ctx || !ctx.hasUI) {
-            if (ctx) {
-              notify(
-                ctx,
-                `Sandbox blocked network access to ${normalizedHost}. To temporarily allow for this session, run: /sandbox network allow add ${normalizedHost}`,
-                "warning",
-              );
-            } else {
-              console.warn(
-                `Sandbox blocked network access to ${normalizedHost}. To temporarily allow for this session, run: /sandbox network allow add ${normalizedHost}`,
-              );
-            }
+            recordNetworkBlock("missing-allowed-domain", normalizedHost, port);
+            const message = `Sandbox blocked network access to ${normalizedHost}. To temporarily allow for this session, run: ${suggestedCommand}`;
+            if (ctx) notify(ctx, message, "warning");
+            else console.warn(message);
             return false;
           }
 
@@ -898,11 +1111,15 @@ export default function (pi: ExtensionAPI) {
           const approved = await withPromptSignal(pi, () =>
             ctx.ui.confirm(`Sandbox blocked network access to ${target}`, "\nAllow for this session?"),
           );
-          if (!approved) return false;
+          if (!approved) {
+            recordNetworkBlock("missing-allowed-domain", normalizedHost, port);
+            return false;
+          }
 
           const latestConfig = getStateRuntimeConfig(sandboxState);
           if (!latestConfig) return false;
           if (latestConfig.network.deniedDomains.includes(normalizedHost)) {
+            recordNetworkBlock("explicit-deny-domain", normalizedHost, port);
             notify(
               ctx,
               `Network access to ${normalizedHost} remains denied by current sandbox policy. Remove it from deny list to allow.`,
@@ -952,6 +1169,7 @@ export default function (pi: ExtensionAPI) {
       promptMode = DEFAULT_PROMPT_MODE;
       pendingNetworkApprovals.clear();
       sandboxState = { status: "blocked", reason: "init-failed" };
+      recordRuntimeBlock("init", "init-failed", `sandbox initialization failed: ${errorMessage}`);
       setSandboxStatus(ctx, false);
       notify(ctx, `Sandbox initialization failed: ${errorMessage}`, "error");
       return null;
@@ -979,6 +1197,8 @@ export default function (pi: ExtensionAPI) {
   const resetRuntimeState = (): void => {
     sandboxState = { status: "pending" };
     promptMode = DEFAULT_PROMPT_MODE;
+    sandboxConfigPaths = [];
+    sandboxBlocks = [];
     pendingNetworkApprovals.clear();
   };
 
@@ -1018,6 +1238,10 @@ export default function (pi: ExtensionAPI) {
     resetRuntimeState();
     rebuildBashTools(ctx.cwd);
 
+    const loadedConfig = loadConfig(ctx.cwd);
+    sandboxConfigPaths = loadedConfig.paths;
+    const config = loadedConfig.config;
+
     const noSandbox = pi.getFlag("no-sandbox") as boolean;
 
     if (noSandbox) {
@@ -1025,8 +1249,6 @@ export default function (pi: ExtensionAPI) {
       notify(ctx, "Sandbox disabled via --no-sandbox", "warning");
       return;
     }
-
-    const config = loadConfig(ctx.cwd);
 
     if (!config.enabled) {
       sandboxState = { status: "bypassed", reason: "config-disabled" };
@@ -1036,6 +1258,7 @@ export default function (pi: ExtensionAPI) {
 
     if (!isSupportedPlatform()) {
       sandboxState = { status: "blocked", reason: "unsupported-platform" };
+      recordRuntimeBlock("init", "unsupported-platform", `sandbox not supported on ${process.platform}`);
       notify(ctx, `Sandbox not supported on ${process.platform}`, "warning");
       return;
     }
@@ -1073,6 +1296,25 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
+      if (subcommand === "doctor") {
+        if (tokens.length > 1) {
+          notify(ctx, "Usage: /sandbox doctor", "warning");
+          return;
+        }
+
+        notify(
+          ctx,
+          renderSandboxDoctorReport({
+            state: sandboxState,
+            promptMode,
+            configPaths: sandboxConfigPaths,
+            blocks: sandboxBlocks,
+          }),
+          "info",
+        );
+        return;
+      }
+
       if (subcommand === "enable") {
         if (tokens.length > 1) {
           notify(ctx, "Usage: /sandbox enable", "warning");
@@ -1092,12 +1334,14 @@ export default function (pi: ExtensionAPI) {
         } else {
           if (!isSupportedPlatform()) {
             sandboxState = { status: "blocked", reason: "unsupported-platform" };
+            recordRuntimeBlock("init", "unsupported-platform", `sandbox not supported on ${process.platform}`);
             notify(ctx, `Sandbox not supported on ${process.platform}`, "warning");
             return;
           }
 
-          const config = loadConfig(ctx.cwd);
-          runtimeConfig = await initializeSandboxRuntime(ctx, config);
+          const loadedConfig = loadConfig(ctx.cwd);
+          sandboxConfigPaths = loadedConfig.paths;
+          runtimeConfig = await initializeSandboxRuntime(ctx, loadedConfig.config);
           if (!runtimeConfig) return;
           initializedNow = true;
         }
