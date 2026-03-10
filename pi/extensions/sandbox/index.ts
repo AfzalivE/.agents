@@ -690,6 +690,7 @@ interface SandboxedBashOpsOptions {
 interface BashAttemptResult {
   exitCode: number | null;
   combinedOutput: string;
+  interruptedByFilesystemViolation: boolean;
 }
 
 function killProcessGroup(child: ReturnType<typeof spawn>, signal: NodeJS.Signals = "SIGKILL"): void {
@@ -730,9 +731,11 @@ function createSandboxedBashOps(options: SandboxedBashOpsOptions): BashOperation
   }
 
   async function runSandboxAttempt(
+    command: string,
     wrappedCommand: string,
     cwd: string,
     onData: (data: Buffer) => void,
+    existingViolationCount: number,
     signal?: AbortSignal,
     timeout?: number,
     env?: NodeJS.ProcessEnv,
@@ -747,8 +750,41 @@ function createSandboxedBashOps(options: SandboxedBashOpsOptions): BashOperation
 
       const chunks: Buffer[] = [];
       let timedOut = false;
+      let interruptedByFilesystemViolation = false;
+      let seenViolationCount = existingViolationCount;
       let timeoutHandle: NodeJS.Timeout | undefined;
       let timeoutEscalationHandle: NodeJS.Timeout | undefined;
+      let filesystemStopEscalationHandle: NodeJS.Timeout | undefined;
+
+      const stopForFilesystemViolation = (): void => {
+        if (interruptedByFilesystemViolation) return;
+
+        interruptedByFilesystemViolation = true;
+        killProcessGroup(child, "SIGTERM");
+        filesystemStopEscalationHandle = setTimeout(() => {
+          killProcessGroup(child, "SIGKILL");
+        }, 500);
+      };
+
+      // sandbox-runtime only provides live filesystem violation events on macOS.
+      // Upstream documents Linux violation monitoring as future work via
+      // automatic strace-based detection integrated with the violation store,
+      // but there is no Linux implementation yet:
+      // https://github.com/anthropic-experimental/sandbox-runtime#known-limitations-and-future-work
+      const unsubscribeViolations =
+        process.platform !== "darwin"
+          ? () => undefined
+          : SandboxManager.getSandboxViolationStore().subscribe(() => {
+              const violations = SandboxManager.getSandboxViolationStore().getViolationsForCommand(command);
+              if (violations.length <= seenViolationCount) return;
+
+              const newViolations = violations.slice(seenViolationCount);
+              seenViolationCount = violations.length;
+
+              if (newViolations.some((violation) => detectFilesystemViolationFromLine(violation.line))) {
+                stopForFilesystemViolation();
+              }
+            });
 
       if (timeout !== undefined && timeout > 0) {
         timeoutHandle = setTimeout(() => {
@@ -776,6 +812,8 @@ function createSandboxedBashOps(options: SandboxedBashOpsOptions): BashOperation
       child.on("error", (err) => {
         if (timeoutHandle) clearTimeout(timeoutHandle);
         if (timeoutEscalationHandle) clearTimeout(timeoutEscalationHandle);
+        if (filesystemStopEscalationHandle) clearTimeout(filesystemStopEscalationHandle);
+        unsubscribeViolations();
         signal?.removeEventListener("abort", onAbort);
         killProcessGroup(child, "SIGKILL");
         reject(err);
@@ -789,6 +827,8 @@ function createSandboxedBashOps(options: SandboxedBashOpsOptions): BashOperation
       child.on("close", (code) => {
         if (timeoutHandle) clearTimeout(timeoutHandle);
         if (timeoutEscalationHandle) clearTimeout(timeoutEscalationHandle);
+        if (filesystemStopEscalationHandle) clearTimeout(filesystemStopEscalationHandle);
+        unsubscribeViolations();
         signal?.removeEventListener("abort", onAbort);
 
         if (signal?.aborted) {
@@ -801,7 +841,11 @@ function createSandboxedBashOps(options: SandboxedBashOpsOptions): BashOperation
           return;
         }
 
-        resolve({ exitCode: code, combinedOutput: Buffer.concat(chunks).toString("utf-8") });
+        resolve({
+          exitCode: interruptedByFilesystemViolation && code === null ? 1 : code,
+          combinedOutput: Buffer.concat(chunks).toString("utf-8"),
+          interruptedByFilesystemViolation,
+        });
       });
     });
   }
@@ -818,7 +862,7 @@ function createSandboxedBashOps(options: SandboxedBashOpsOptions): BashOperation
 
         let attempt: BashAttemptResult;
         try {
-          attempt = await runSandboxAttempt(wrappedCommand, cwd, onData, signal, timeout, env);
+          attempt = await runSandboxAttempt(command, wrappedCommand, cwd, onData, existingViolationCount, signal, timeout, env);
         } catch (err) {
           safeCleanupAfterCommand();
           throw err;
@@ -826,13 +870,13 @@ function createSandboxedBashOps(options: SandboxedBashOpsOptions): BashOperation
 
         try {
           const annotatedOutput = SandboxManager.annotateStderrWithSandboxFailures(command, attempt.combinedOutput);
-          const commandSucceeded = attempt.exitCode === 0;
+          const commandSucceeded = attempt.exitCode === 0 && !attempt.interruptedByFilesystemViolation;
           let postamble =
             commandSucceeded
               ? ""
               : extractAppendedSandboxAnnotation(attempt.combinedOutput, annotatedOutput, existingViolationCount);
 
-          if (attempt.exitCode !== 0 && attempt.exitCode !== null) {
+          if (!commandSucceeded) {
             const runtimeConfig = getRuntimeConfig();
 
             if (runtimeConfig) {
