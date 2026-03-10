@@ -524,6 +524,7 @@ async function handleFilesystemViolation(options: {
   pendingPrompts?: Map<string, Promise<string | null>>;
   applyRuntimeConfigForSession?: (ctx: ExtensionContext, runtimeConfig: SandboxRuntimeConfig) => void;
   existingViolationCount?: number;
+  recordBlock?: (block?: unknown) => void;
 }): Promise<string | null> {
   const {
     pi,
@@ -608,6 +609,7 @@ interface SandboxedBashOpsOptions {
   getPromptMode: () => PromptMode;
   getCwd: () => string;
   applyRuntimeConfigForSession: (ctx: ExtensionContext, runtimeConfig: SandboxRuntimeConfig) => void;
+  recordBlock?: (block?: unknown) => void;
 }
 
 interface BashAttemptResult {
@@ -638,7 +640,7 @@ function safeCleanupAfterCommand(): void {
 }
 
 function createSandboxedBashOps(options: SandboxedBashOpsOptions): BashOperations {
-  const { pi, getContext, getRuntimeConfig, getPromptMode, getCwd, applyRuntimeConfigForSession } = options;
+  const { pi, getContext, getRuntimeConfig, getPromptMode, getCwd, applyRuntimeConfigForSession, recordBlock } = options;
   const pendingFilesystemPrompts = new Map<string, Promise<string | null>>();
 
   let executionQueue: Promise<void> = Promise.resolve();
@@ -771,6 +773,7 @@ function createSandboxedBashOps(options: SandboxedBashOpsOptions): BashOperation
                 pendingPrompts: pendingFilesystemPrompts,
                 applyRuntimeConfigForSession,
                 existingViolationCount,
+                recordBlock,
               });
 
               if (advice) {
