@@ -15,6 +15,7 @@ The bash wrapper has already run a pre-audit and appended it to your system prom
 - Read files flagged as RECENTLY CHANGED in the audit
 - If multiple files contain overlapping content on the same topic, merge into the canonical location
 - Remove duplication after merging
+- **Plan files** (tagged `planning`): never trim, summarize, or rewrite their content. Plans are reference artifacts — their detailed steps have value even after implementation. During consolidation, only fix broken links or merge duplicate plan files covering the same topic.
 
 ### 2. Reorganization
 - Read files flagged as LARGE in the audit
@@ -38,10 +39,18 @@ Use the thresholds from `config/sleep.yaml`:
 
 Never weaken or archive files listed in `config/sleep.yaml` under `protected_files`.
 
-### 4. Deletion
+### 4. Archiving shipped plans
+- When a plan file (tagged `planning`) has a **Status** of "Shipped", move it intact to `archive/plans/`.
+- "Shipped" means the work was merged in a PR. Other statuses like "Implemented" or "In Progress" mean the plan is still active — leave it in place.
+- Do NOT trim, summarize, or gut the plan content — move the full file as-is.
+- Update any wikilinks in MOC pages to point to the new location.
+- Never determine shipped status on your own. Only act on an explicit `Status: Shipped` field in the plan file itself.
+
+### 5. Deletion
 - Only delete entries that are **factually wrong or superseded** (e.g., a tool path that changed, a version that's wrong)
 - High confidence required — when in doubt, skip
 - Never delete content that's merely old
+- Never delete or reduce plan files — archive them intact instead (see step 4)
 
 ## Rules
 
