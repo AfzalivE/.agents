@@ -1398,7 +1398,7 @@ function renderTaskList(theme: any, tasks: TodoTask[], expanded: boolean): strin
   const max = expanded ? tasks.length : Math.min(tasks.length, 8);
   const lines = tasks.slice(0, max).map((task) => renderTaskLine(theme, task));
   if (!expanded && tasks.length > max) {
-    lines.push(theme.fg("dim", `… ${tasks.length - max} more (${keyHint("expandTools", "to expand")})`));
+    lines.push(theme.fg("dim", `… ${tasks.length - max} more (${keyHint("app.tools.expand", "to expand")})`));
   }
   return lines.join("\n");
 }
@@ -1808,7 +1808,7 @@ export default function todosExtension(pi: ExtensionAPI) {
               }
             }
           } else {
-            lines.push(theme.fg("dim", `${details.comments.length} comments (${keyHint("expandTools", "to show")})`));
+            lines.push(theme.fg("dim", `${details.comments.length} comments (${keyHint("app.tools.expand", "to show")})`));
           }
         }
 
