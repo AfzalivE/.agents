@@ -1637,15 +1637,23 @@ function extractTextContent(content: unknown): string {
     .join("\n");
 }
 
-function extractAssistantTextFromEvent(event: unknown): string {
-  if (!event || typeof event !== "object") return "";
-  // In pi --mode json, message_end contains the complete assistant message content.
-  if (!("type" in event) || event.type !== "message_end") return "";
-  if (!("message" in event) || !event.message || typeof event.message !== "object") return "";
-  const message = event.message;
-  if (!("role" in message) || message.role !== "assistant") return "";
-  if (!("content" in message)) return "";
-  return extractTextContent(message.content);
+function extractAssistantMessageFromEvent(event: unknown): Record<string, unknown> | null {
+  const record = asRecord(event);
+  if (!record || typeof record.type !== "string") return null;
+
+  if (record.type === "message_end" || record.type === "turn_end") {
+    const message = asRecord(record.message);
+    return message?.role === "assistant" ? message : null;
+  }
+
+  if (record.type !== "agent_end" || !Array.isArray(record.messages)) return null;
+  for (let i = record.messages.length - 1; i >= 0; i -= 1) {
+    const message = asRecord(record.messages[i]);
+    if (message?.role === "assistant") {
+      return message;
+    }
+  }
+  return null;
 }
 
 function parsePossiblyWrappedJson(raw: string): unknown {
@@ -1860,12 +1868,10 @@ async function runPiJsonTask({
       if (!trimmed) return;
       try {
         const event = JSON.parse(trimmed);
-        const text = extractAssistantTextFromEvent(event);
-        if (text) latestAssistantOutput = text;
-
-        const eventRecord = asRecord(event);
-        const message = eventRecord?.type === "message_end" ? asRecord(eventRecord.message) : null;
-        if (message?.role === "assistant") {
+        const message = extractAssistantMessageFromEvent(event);
+        if (message) {
+          const text = extractTextContent(message.content);
+          if (text) latestAssistantOutput = text;
           latestAssistantError =
             message.stopReason === "error" && typeof message.errorMessage === "string" ? message.errorMessage : "";
         }
