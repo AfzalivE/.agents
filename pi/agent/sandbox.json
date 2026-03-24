@@ -6,6 +6,7 @@
       "github.com",
       "*.github.com",
       "*.githubusercontent.com",
+      "auth.docker.io",
       "npmjs.org",
       "*.npmjs.org",
       "registry.yarnpkg.com",
