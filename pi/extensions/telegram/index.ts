@@ -18,7 +18,7 @@ type DaemonToClientMessage =
   | { type: "pin"; code: string; expiresAt: number }
   | { type: "paired"; chatId: number }
   | { type: "error"; error: string }
-  | { type: "inject"; mode: "followUp" | "steer"; text: string }
+  | { type: "inject"; text: string }
   | { type: "abort" };
 
 type ClientToDaemonMessage =
@@ -530,7 +530,7 @@ export default function (pi: ExtensionAPI) {
       if (!text) return;
 
       if (!ctx.isIdle()) {
-        pi.sendUserMessage(text, { deliverAs: msg.mode });
+        pi.sendUserMessage(text, { deliverAs: "followUp" });
       } else {
         pi.sendUserMessage(text);
       }

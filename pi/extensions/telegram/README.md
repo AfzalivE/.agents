@@ -62,7 +62,6 @@ Once paired:
 - `/window N` – switch active window and replay its last completed turn
 - `/unpair` – unpair Telegram and disconnect all windows
 - `/esc` – abort current run in the active window
-- `/steer <message>` – interrupt (steer) the active window
 - plain text – send to active window (queued as follow-up if the agent is busy)
 
 ## Notes

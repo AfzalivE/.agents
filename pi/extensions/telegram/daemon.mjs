@@ -16,7 +16,6 @@ const TELEGRAM_COMMANDS = [
   { command: "pin", description: "Pair this chat with pi using a 6-digit PIN" },
   { command: "windows", description: "List connected pi windows" },
   { command: "esc", description: "Abort current run in active window" },
-  { command: "steer", description: "Interrupt active window: /steer <message>" },
   { command: "unpair", description: "Unpair Telegram and disconnect all windows" },
   { command: "help", description: "Show available commands" },
 ];
@@ -436,7 +435,7 @@ async function handleTelegramMessage(msg) {
   if (text === "/help") {
     await botSend(
       chatId,
-      "telegram commands:\n/windows - list windows\n/window N - switch active window\n/unpair - unpair Telegram and disconnect all windows\n/esc - abort current agent run in active window\n/steer <msg> - interrupt (steer) active window\n(plain text) - send to active window (queued as follow-up if busy)\n",
+      "telegram commands:\n/windows - list windows\n/window N - switch active window\n/unpair - unpair Telegram and disconnect all windows\n/esc - abort current agent run in active window\n(plain text) - send to active window (queued as follow-up if busy)\n",
     );
     return;
   }
@@ -469,24 +468,12 @@ async function handleTelegramMessage(msg) {
     return;
   }
 
-  const steerMatch = text.match(/^\/steer\s+([\s\S]+)$/);
-  if (steerMatch) {
-    const msgText = steerMatch[1].trim();
-    if (!msgText) {
-      await botSend(chatId, "Usage: /steer <message>");
-      return;
-    }
-    const sent = sendToActiveWindow({ type: "inject", mode: "steer", text: msgText });
-    if (!sent) await botSend(chatId, "No active window. Use /windows then /window N.");
-    return;
-  }
-
   if (text.startsWith("/")) {
     await botSend(chatId, "Unknown command. Use /help.");
     return;
   }
 
-  const sent = sendToActiveWindow({ type: "inject", mode: "followUp", text });
+  const sent = sendToActiveWindow({ type: "inject", text });
   if (!sent) {
     await botSend(chatId, "No active window. Use /windows then /window N.");
   }
