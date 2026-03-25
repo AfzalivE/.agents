@@ -435,7 +435,15 @@ async function handleTelegramMessage(msg) {
   if (text === "/help") {
     await botSend(
       chatId,
-      "telegram commands:\n/windows - list windows\n/window N - switch active window\n/unpair - unpair Telegram and disconnect all windows\n/esc - abort current agent run in active window\n(plain text) - send to active window (queued as follow-up if busy)\n",
+      [
+        "The following commands are available:",
+        "",
+        "/windows - list windows",
+        "/window N - switch active window",
+        "/unpair - unpair and disconnnect all windows",
+        "/esc - abort run in active window",
+        "(plain text) - send to active window",
+      ].join("\n"),
     );
     return;
   }
