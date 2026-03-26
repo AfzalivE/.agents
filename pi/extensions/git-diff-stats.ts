@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { copyFile, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 
-const STATUS_KEY = "git-diff-stats";
+const STATUS_KEY = "0-git-diff-stats";
 const REFRESH_DEBOUNCE_MS = 250;
 
 type DiffStats = {
