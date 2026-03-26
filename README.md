@@ -43,16 +43,23 @@ bin/sync               Symlink everything into Codex, Claude, and Pi config dirs
 
 ## Pi Extensions
 
-| Extension | Command | Description |
-|-----------|---------|-------------|
-| `answer` | `/answer` | Extract and interactively answer agent questions |
-| `branch-term` | `/branch-term` | Open a new terminal on the current session's git branch |
-| `ghostty` | _automatic_ | Ghostty tab title and progress while the agent is working |
-| `loop` | `/loop` | Repeat a prompt until the agent signals success |
-| `review` | `/review` | Review PRs, branches, commits, or uncommitted changes |
-| `sandbox` | `/sandbox` | OS-level sandboxing for bash commands with runtime overrides |
-| `session-breakdown` | `/session-breakdown` | Usage stats and contribution-style calendar |
-| `todo` | `/todo` | Todoist-backed tasks with offline outbox sync for single or multi-session work |
-| `websearch` | — | Web search via Gemini, OpenAI, or Claude, leveraging Pi or browser session credentials |
-| `git-checkpoint` | _automatic_ | Stash checkpoints each turn so `/fork` can restore code state |
-| `notify` | _automatic_ | Terminal notification when the agent is waiting for input |
+| Extension | Command / Shortcut | Description |
+|-----------|--------------------|-------------|
+| answer | `/answer` | Extract and interactively answer agent questions |
+| branch-term | `/branch` | Open a new terminal on the current session's git branch |
+| btw | `/btw` | Run a one-off side request with read-only tools and no context persistence |
+| fast | `/fast` | Toggle priority service tier for OpenAI/Codex models |
+| ghostty | _auto_ | Ghostty tab title and progress while the agent is working, waiting, or idle |
+| git-checkpoint | _auto_ | Stash checkpoints each turn so `/fork` can restore code state |
+| git-diff-stats | _auto_ | Status bar diff stats for local changes in the current repo |
+| insights | `/insights` | Analyze Pi sessions and suggest reusable instructions, templates, skills, and extensions |
+| interlude | `ctrl+x` (configurable) | Stash the current message draft, send one interlude message, then restore the draft |
+| loop | `/loop` | Repeat a prompt until the agent signals success |
+| notify | _auto_ | Terminal notification when the agent is waiting for input |
+| review | `/review` | Review PRs, branches, commits, or uncommitted changes |
+| sandbox | `/sandbox` | OS-level sandboxing for bash commands with runtime overrides |
+| session-breakdown | `/session-breakdown` | Usage stats and contribution-style calendar |
+| telegram | `/telegram` | Interact with Pi via a Telegram bot and local daemon |
+| todo | `/todo` | Todoist-backed tasks with offline outbox sync for single or multi-session work |
+| websearch | _auto_ | Web search via Gemini, OpenAI, or Claude, leveraging Pi or browser session credentials |
+| worktree | `/worktree` | Create, list, and archive git worktrees, optionally opening them in a new terminal or tmux pane |
