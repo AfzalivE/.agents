@@ -52,6 +52,7 @@ bin/sync               Symlink everything into Codex, Claude, and Pi config dirs
 | ghostty |  | Ghostty tab title and progress while the agent is working, waiting, or idle |
 | git-checkpoint |  | Stash checkpoints each turn so `/fork` can restore code state |
 | git-diff-stats |  | Status bar diff stats for local changes in the current repo |
+| git-pr-status |  | Status bar PR number and link for the current branch |
 | insights | `/insights` | Analyze Pi sessions and suggest reusable instructions, templates, skills, and extensions |
 | interlude | `ctrl+x` <small>(configurable)</small> | Stash the current message draft, send one interlude message, then restore the draft |
 | loop | `/loop` | Repeat a prompt until the agent signals success |
