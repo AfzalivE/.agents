@@ -40,7 +40,7 @@
  * Linux also requires: bubblewrap, socat, ripgrep
  */
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -49,6 +49,14 @@ import {
   type SandboxAskCallback,
   type SandboxRuntimeConfig,
 } from "@anthropic-ai/sandbox-runtime";
+// Deep import for parity with sandbox-runtime's own path normalization and glob matching.
+// The public package exports do not expose these helpers, but using the same internals keeps
+// the extension's policy checks aligned with the runtime's actual sandbox behavior.
+import {
+  containsGlobChars,
+  globToRegex,
+  normalizePathForSandbox,
+} from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { type BashOperations, createBashTool } from "@mariozechner/pi-coding-agent";
 
@@ -84,6 +92,7 @@ const DEFAULT_CONFIG: SandboxConfig = {
 const STATUS_KEY = "sandbox";
 const SANDBOX_BLOCK_LIMIT = 50;
 const METADATA_TRAVERSAL_PROCESSES = new Set(["find", "ls"]);
+const GIT_METADATA_DIR_CACHE = new Map<string, string | null>();
 
 // --- Types ---
 
@@ -378,28 +387,59 @@ function cloneRuntimeConfig(config: SandboxRuntimeConfig): SandboxRuntimeConfig 
   return structuredClone(config);
 }
 
-function expandTildePath(value: string): string {
-  if (value.startsWith("~/")) return join(homedir(), value.slice(2));
-  return value;
+function normalizeSandboxPath(value: string, cwd?: string): string {
+  const expanded = value.startsWith("~/") ? join(homedir(), value.slice(2)) : value;
+  const absolute = cwd && !expanded.startsWith("/") ? resolve(cwd, expanded) : expanded;
+  return normalizePathForSandbox(absolute);
 }
 
-function inferLiteralRuleMatch(path: string, rules: string[], cwd?: string): string | null {
-  const normalizedPath = expandTildePath(path);
+function matchesSandboxRule(path: string, rule: string, cwd?: string): boolean {
+  const normalizedPath = normalizeSandboxPath(path);
+  const normalizedRule = normalizeSandboxPath(rule, cwd);
 
+  if (containsGlobChars(rule)) {
+    return new RegExp(globToRegex(normalizedRule)).test(normalizedPath);
+  }
+
+  if (normalizedPath === normalizedRule) return true;
+
+  const prefix = normalizedRule.endsWith("/") ? normalizedRule : `${normalizedRule}/`;
+  return normalizedPath.startsWith(prefix);
+}
+
+function inferSandboxRuleMatch(path: string, rules: string[], cwd?: string): string | null {
   for (const rule of rules) {
-    if (rule.includes("*") || rule.includes("?") || rule.includes("[")) continue;
-
-    const normalizedRuleBase = expandTildePath(rule);
-    const normalizedRule =
-      cwd && !normalizedRuleBase.startsWith("/") ? resolve(cwd, normalizedRuleBase) : normalizedRuleBase;
-
-    if (normalizedPath === normalizedRule) return rule;
-
-    const prefix = normalizedRule.endsWith("/") ? normalizedRule : `${normalizedRule}/`;
-    if (normalizedPath.startsWith(prefix)) return rule;
+    if (matchesSandboxRule(path, rule, cwd)) return rule;
   }
 
   return null;
+}
+
+function isSandboxWritablePath(runtimeConfig: SandboxRuntimeConfig, path: string, cwd?: string): boolean {
+  if (!inferSandboxRuleMatch(path, runtimeConfig.filesystem.allowWrite, cwd)) return false;
+  return inferSandboxRuleMatch(path, runtimeConfig.filesystem.denyWrite, cwd) === null;
+}
+
+function resolveGitMetadataDir(cwd: string): string | null {
+  if (GIT_METADATA_DIR_CACHE.has(cwd)) {
+    return GIT_METADATA_DIR_CACHE.get(cwd) ?? null;
+  }
+
+  const result = spawnSync("git", ["rev-parse", "--git-dir"], {
+    cwd,
+    encoding: "utf-8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+
+  if (result.status !== 0) {
+    GIT_METADATA_DIR_CACHE.set(cwd, null);
+    return null;
+  }
+
+  const gitDir = result.stdout.trim();
+  const resolvedGitDir = gitDir ? resolve(cwd, gitDir) : null;
+  GIT_METADATA_DIR_CACHE.set(cwd, resolvedGitDir);
+  return resolvedGitDir;
 }
 
 function extractSandboxViolationLines(output: string): string[] {
@@ -516,7 +556,7 @@ function isMetadataTraversalViolation(
 ): boolean {
   if (!runtimeConfig || violation.kind !== "read" || violation.readAccess !== "metadata") return false;
   if (!violation.path || !METADATA_TRAVERSAL_PROCESSES.has(violation.processName ?? "")) return false;
-  return inferLiteralRuleMatch(violation.path, runtimeConfig.filesystem.denyRead, cwd) !== null;
+  return inferSandboxRuleMatch(violation.path, runtimeConfig.filesystem.denyRead, cwd) !== null;
 }
 
 function getMetadataTraversalPaths(options: {
@@ -577,12 +617,12 @@ function buildFilesystemAllowAction(
   if (!violation.path) return null;
 
   if (violation.kind === "read") {
-    const matchedRule = inferLiteralRuleMatch(violation.path, runtimeConfig.filesystem.denyRead, cwd);
+    const matchedRule = inferSandboxRuleMatch(violation.path, runtimeConfig.filesystem.denyRead, cwd);
     return { list: "deny-read", op: "remove", value: matchedRule ?? violation.path };
   }
 
   if (violation.kind === "write") {
-    const matchedDeny = inferLiteralRuleMatch(violation.path, runtimeConfig.filesystem.denyWrite, cwd);
+    const matchedDeny = inferSandboxRuleMatch(violation.path, runtimeConfig.filesystem.denyWrite, cwd);
     if (matchedDeny) {
       return { list: "deny-write", op: "remove", value: matchedDeny };
     }
@@ -590,12 +630,12 @@ function buildFilesystemAllowAction(
     return { list: "allow-write", op: "add", value: violation.path };
   }
 
-  const matchedDenyWrite = inferLiteralRuleMatch(violation.path, runtimeConfig.filesystem.denyWrite, cwd);
+  const matchedDenyWrite = inferSandboxRuleMatch(violation.path, runtimeConfig.filesystem.denyWrite, cwd);
   if (matchedDenyWrite) {
     return { list: "deny-write", op: "remove", value: matchedDenyWrite };
   }
 
-  const matchedDenyRead = inferLiteralRuleMatch(violation.path, runtimeConfig.filesystem.denyRead, cwd);
+  const matchedDenyRead = inferSandboxRuleMatch(violation.path, runtimeConfig.filesystem.denyRead, cwd);
   if (matchedDenyRead) {
     return { list: "deny-read", op: "remove", value: matchedDenyRead };
   }
@@ -719,7 +759,7 @@ async function handleFilesystemViolation(options: {
   if (!allowAction || !allowCommand) return summary;
 
   if (alreadyApproved) {
-    return `[sandbox] Filesystem ${target} is already allowed for this session.${commandInfo}${retryHint}`;
+    return `[sandbox] Filesystem ${target} is already allowed for this session. The remaining failure is likely unrelated to sandbox filesystem policy.`;
   }
 
   const promptKey = allowCommand;
@@ -792,6 +832,27 @@ function safeCleanupAfterCommand(): void {
   } catch {
     // Ignore cleanup errors.
   }
+}
+
+function maybeAllowGitMetadataWriteForSession(options: {
+  ctx: ExtensionContext | null;
+  cwd: string;
+  runtimeConfig: SandboxRuntimeConfig | null;
+  applyRuntimeConfigForSession: (ctx: ExtensionContext, runtimeConfig: SandboxRuntimeConfig) => void;
+}): void {
+  const { ctx, cwd, runtimeConfig, applyRuntimeConfigForSession } = options;
+  if (!ctx || !runtimeConfig) return;
+  if (!isSandboxWritablePath(runtimeConfig, cwd, cwd)) return;
+
+  const gitDir = resolveGitMetadataDir(cwd);
+  if (!gitDir) return;
+  if (isSandboxWritablePath(runtimeConfig, gitDir, cwd)) return;
+  if (inferSandboxRuleMatch(gitDir, runtimeConfig.filesystem.denyWrite, cwd)) return;
+
+  const nextConfig = cloneRuntimeConfig(runtimeConfig);
+  if (!mutateStringList(nextConfig.filesystem.allowWrite, "add", gitDir)) return;
+
+  applyRuntimeConfigForSession(ctx, nextConfig);
 }
 
 function createSandboxedBashOps(options: SandboxedBashOpsOptions): BashOperations {
@@ -942,6 +1003,13 @@ function createSandboxedBashOps(options: SandboxedBashOpsOptions): BashOperation
           throw new Error(`Working directory does not exist: ${cwd}`);
         }
 
+        maybeAllowGitMetadataWriteForSession({
+          ctx: getContext(),
+          cwd,
+          runtimeConfig: getRuntimeConfig(),
+          applyRuntimeConfigForSession,
+        });
+
         const wrappedCommand = await SandboxManager.wrapWithSandbox(command);
         const existingViolationCount = SandboxManager.getSandboxViolationStore().getViolationsForCommand(command).length;
 
@@ -1065,10 +1133,10 @@ function classifyFilesystemBlockReason(
   if (alreadyApproved) return "already-approved-still-failed";
 
   if (violation.path) {
-    if (inferLiteralRuleMatch(violation.path, runtimeConfig.filesystem.denyWrite, cwd)) {
+    if (inferSandboxRuleMatch(violation.path, runtimeConfig.filesystem.denyWrite, cwd)) {
       return "explicit-deny-write";
     }
-    if (inferLiteralRuleMatch(violation.path, runtimeConfig.filesystem.denyRead, cwd)) {
+    if (inferSandboxRuleMatch(violation.path, runtimeConfig.filesystem.denyRead, cwd)) {
       return "explicit-deny-read";
     }
   }
