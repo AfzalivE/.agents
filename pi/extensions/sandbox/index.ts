@@ -220,8 +220,8 @@ function notify(ctx: ExtensionContext, text: string, level: UiLevel = "info"): v
 function showHelp(ctx: ExtensionContext): void {
   const lines = [
     "Usage:",
-    "  /sandbox enable",
-    "  /sandbox disable",
+    "  /sandbox enable|on",
+    "  /sandbox disable|off",
     "  /sandbox show",
     "  /sandbox doctor",
     "  /sandbox mode <interactive|non-interactive>",
@@ -249,6 +249,17 @@ function parseCommandArgs(args?: string): string[] {
   }
 
   return tokens;
+}
+
+function normalizeSubcommand(token?: string): string | undefined {
+  switch (token?.toLowerCase()) {
+    case "on":
+      return "enable";
+    case "off":
+      return "disable";
+    default:
+      return token?.toLowerCase();
+  }
 }
 
 function coerceStringArray(value: unknown, fallback: string[], field: string): string[] {
@@ -1513,7 +1524,7 @@ export default function (pi: ExtensionAPI) {
     description: "Manage sandbox runtime overrides",
     handler: async (args, ctx) => {
       const tokens = parseCommandArgs(args);
-      const subcommand = tokens[0]?.toLowerCase();
+      const subcommand = normalizeSubcommand(tokens[0]);
 
       if (!subcommand || subcommand === "help") {
         showHelp(ctx);
@@ -1541,7 +1552,7 @@ export default function (pi: ExtensionAPI) {
 
       if (subcommand === "enable") {
         if (tokens.length > 1) {
-          notify(ctx, "Usage: /sandbox enable", "warning");
+          notify(ctx, "Usage: /sandbox enable|on", "warning");
           return;
         }
 
@@ -1588,7 +1599,7 @@ export default function (pi: ExtensionAPI) {
 
       if (subcommand === "disable") {
         if (tokens.length > 1) {
-          notify(ctx, "Usage: /sandbox disable", "warning");
+          notify(ctx, "Usage: /sandbox disable|off", "warning");
           return;
         }
 
