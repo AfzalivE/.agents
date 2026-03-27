@@ -83,6 +83,7 @@ const DEFAULT_CONFIG: SandboxConfig = {
 
 const STATUS_KEY = "sandbox";
 const SANDBOX_BLOCK_LIMIT = 50;
+const METADATA_TRAVERSAL_PROCESSES = new Set(["find", "ls"]);
 
 // --- Types ---
 
@@ -127,6 +128,7 @@ type NetworkList = "allow" | "deny";
 type FilesystemList = "deny-read" | "allow-write" | "deny-write";
 
 type FilesystemViolationKind = "read" | "write" | "unknown";
+type FilesystemReadAccess = "metadata" | "data" | "unknown";
 
 interface SandboxBlock {
   timestamp: number;
@@ -153,6 +155,8 @@ interface LoadedSandboxConfig {
 interface FilesystemViolation {
   kind: FilesystemViolationKind;
   path?: string;
+  processName?: string;
+  readAccess?: FilesystemReadAccess;
 }
 
 // --- Helpers ---
@@ -446,11 +450,33 @@ function extractPathLikeValue(text: string): string | undefined {
   return undefined;
 }
 
+function extractViolationProcessName(line: string): string | undefined {
+  const match = line.match(/^([^\s(]+)\(/);
+  return match?.[1]?.trim() || undefined;
+}
+
 function detectFilesystemViolationFromLine(line: string): FilesystemViolation | null {
   // Runtime emits concrete op variants (e.g. file-write-create/unlink, file-read-data).
   const lower = line.toLowerCase();
-  if (lower.includes("file-write")) return { kind: "write", path: extractPathLikeValue(line) };
-  if (lower.includes("file-read")) return { kind: "read", path: extractPathLikeValue(line) };
+  const path = extractPathLikeValue(line);
+  const processName = extractViolationProcessName(line);
+
+  if (lower.includes("file-write")) {
+    return { kind: "write", path, processName };
+  }
+
+  if (lower.includes("file-read-metadata")) {
+    return { kind: "read", path, processName, readAccess: "metadata" };
+  }
+
+  if (lower.includes("file-read-data")) {
+    return { kind: "read", path, processName, readAccess: "data" };
+  }
+
+  if (lower.includes("file-read")) {
+    return { kind: "read", path, processName, readAccess: "unknown" };
+  }
+
   return null;
 }
 
@@ -481,6 +507,55 @@ function detectFilesystemViolations(
   }
 
   return violations;
+}
+
+function isMetadataTraversalViolation(
+  runtimeConfig: SandboxRuntimeConfig | null,
+  violation: FilesystemViolation,
+  cwd?: string,
+): boolean {
+  if (!runtimeConfig || violation.kind !== "read" || violation.readAccess !== "metadata") return false;
+  if (!violation.path || !METADATA_TRAVERSAL_PROCESSES.has(violation.processName ?? "")) return false;
+  return inferLiteralRuleMatch(violation.path, runtimeConfig.filesystem.denyRead, cwd) !== null;
+}
+
+function getMetadataTraversalPaths(options: {
+  runtimeConfig: SandboxRuntimeConfig | null;
+  output: string;
+  cwd?: string;
+  skipViolationLines?: number;
+}): string[] | null {
+  const { runtimeConfig, output, cwd, skipViolationLines = 0 } = options;
+  if (!runtimeConfig) return null;
+
+  const allViolationLines = extractSandboxViolationLines(output);
+  const violationLines =
+    skipViolationLines > 0
+      ? allViolationLines.slice(Math.min(skipViolationLines, allViolationLines.length))
+      : allViolationLines;
+  if (violationLines.length === 0) return null;
+
+  const skippedPaths: string[] = [];
+  for (const line of violationLines) {
+    const violation = detectFilesystemViolationFromLine(line);
+    if (!violation || !isMetadataTraversalViolation(runtimeConfig, violation, cwd)) {
+      return null;
+    }
+    if (violation.path && !skippedPaths.includes(violation.path)) {
+      skippedPaths.push(violation.path);
+    }
+  }
+
+  return skippedPaths.length > 0 ? skippedPaths : null;
+}
+
+function formatMetadataTraversalNotice(paths: string[]): string {
+  if (paths.length === 0) return "";
+
+  const visiblePaths = paths.slice(0, 3).join(", ");
+  const suffix = paths.length > 3 ? ", ..." : "";
+  const label = paths.length === 1 ? "path" : "paths";
+  return `[sandbox] Continued after skipping protected ${label}: ${visiblePaths}${suffix}`;
 }
 
 function escapeSlashCommandArg(value: string): string {
@@ -687,7 +762,6 @@ interface SandboxedBashOpsOptions {
   getContext: () => ExtensionContext | null;
   getRuntimeConfig: () => SandboxRuntimeConfig | null;
   getPromptMode: () => PromptMode;
-  getCwd: () => string;
   applyRuntimeConfigForSession: (ctx: ExtensionContext, runtimeConfig: SandboxRuntimeConfig) => void;
   recordBlock?: (block: SandboxBlock) => void;
 }
@@ -721,7 +795,7 @@ function safeCleanupAfterCommand(): void {
 }
 
 function createSandboxedBashOps(options: SandboxedBashOpsOptions): BashOperations {
-  const { pi, getContext, getRuntimeConfig, getPromptMode, getCwd, applyRuntimeConfigForSession, recordBlock } = options;
+  const { pi, getContext, getRuntimeConfig, getPromptMode, applyRuntimeConfigForSession, recordBlock } = options;
   const pendingFilesystemPrompts = new Map<string, Promise<string | null>>();
 
   let executionQueue: Promise<void> = Promise.resolve();
@@ -786,7 +860,13 @@ function createSandboxedBashOps(options: SandboxedBashOpsOptions): BashOperation
               const newViolations = violations.slice(seenViolationCount);
               seenViolationCount = violations.length;
 
-              if (newViolations.some((violation) => detectFilesystemViolationFromLine(violation.line))) {
+              const runtimeConfig = getRuntimeConfig();
+              const shouldStop = newViolations.some((violation) => {
+                const filesystemViolation = detectFilesystemViolationFromLine(violation.line);
+                if (!filesystemViolation) return false;
+                return !isMetadataTraversalViolation(runtimeConfig, filesystemViolation, cwd);
+              });
+              if (shouldStop) {
                 stopForFilesystemViolation();
               }
             });
@@ -875,44 +955,59 @@ function createSandboxedBashOps(options: SandboxedBashOpsOptions): BashOperation
 
         try {
           const annotatedOutput = SandboxManager.annotateStderrWithSandboxFailures(command, attempt.combinedOutput);
-          const commandSucceeded = attempt.exitCode === 0 && !attempt.interruptedByFilesystemViolation;
+          const runtimeConfig = getRuntimeConfig();
+          const metadataTraversalPaths =
+            attempt.exitCode !== 0 && !attempt.interruptedByFilesystemViolation
+              ? getMetadataTraversalPaths({
+                  runtimeConfig,
+                  output: annotatedOutput,
+                  cwd,
+                  skipViolationLines: existingViolationCount,
+                })
+              : null;
+          const effectiveExitCode = metadataTraversalPaths ? 0 : attempt.exitCode;
+          const commandSucceeded = effectiveExitCode === 0 && !attempt.interruptedByFilesystemViolation;
           let postamble =
             commandSucceeded
               ? ""
               : extractAppendedSandboxAnnotation(attempt.combinedOutput, annotatedOutput, existingViolationCount);
 
-          if (!commandSucceeded) {
-            const runtimeConfig = getRuntimeConfig();
+          if (metadataTraversalPaths) {
+            const notice = formatMetadataTraversalNotice(metadataTraversalPaths);
+            if (notice) {
+              const needsSeparator = attempt.combinedOutput.length > 0 && !attempt.combinedOutput.endsWith("\n");
+              if (needsSeparator) postamble += "\n";
+              postamble += notice;
+            }
+          } else if (!commandSucceeded && runtimeConfig) {
+            const advice = await handleFilesystemViolation({
+              pi,
+              ctx: getContext(),
+              promptMode: getPromptMode(),
+              runtimeConfig,
+              output: annotatedOutput,
+              rawOutput: attempt.combinedOutput,
+              command,
+              cwd,
+              pendingPrompts: pendingFilesystemPrompts,
+              applyRuntimeConfigForSession,
+              existingViolationCount,
+              recordBlock,
+            });
 
-            if (runtimeConfig) {
-              const advice = await handleFilesystemViolation({
-                pi,
-                ctx: getContext(),
-                promptMode: getPromptMode(),
-                runtimeConfig,
-                output: annotatedOutput,
-                rawOutput: attempt.combinedOutput,
-                command,
-                cwd: getCwd(),
-                pendingPrompts: pendingFilesystemPrompts,
-                applyRuntimeConfigForSession,
-                existingViolationCount,
-                recordBlock,
-              });
+            if (advice) {
+              const needsSeparator =
+                postamble.length > 0
+                  ? !postamble.endsWith("\n")
+                  : attempt.combinedOutput.length > 0 && !attempt.combinedOutput.endsWith("\n");
 
-              if (advice) {
-                const needsSeparator =
-                  postamble.length > 0
-                    ? !postamble.endsWith("\n")
-                    : attempt.combinedOutput.length > 0 && !attempt.combinedOutput.endsWith("\n");
-
-                if (needsSeparator) postamble += "\n";
-                postamble += advice;
-              }
+              if (needsSeparator) postamble += "\n";
+              postamble += advice;
             }
           }
 
           if (postamble) onData(Buffer.from(postamble));
+          return { exitCode: effectiveExitCode };
         } catch (postProcessError) {
           const message = `[sandbox] Post-processing error: ${postProcessError instanceof Error ? postProcessError.message : postProcessError}`;
           const ctx = getContext();
@@ -1239,7 +1334,6 @@ export default function (pi: ExtensionAPI) {
     getContext: () => sessionContext,
     getRuntimeConfig: () => getStateRuntimeConfig(sandboxState),
     getPromptMode: () => promptMode,
-    getCwd: () => sessionCwd,
     applyRuntimeConfigForSession,
   });
 
