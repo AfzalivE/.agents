@@ -816,7 +816,7 @@ export default function (pi: ExtensionAPI) {
             ctx.ui.notify(`Send this in Telegram: /pin ${pin.code} (valid 60s)`, "info");
             ctx.ui.setWidget("telegram", [
               `Telegram pairing: send /pin ${pin.code} (valid 60s)`,
-              "All open pi windows will appear in Telegram /session as [window].",
+              "All open pi windows will appear in Telegram /sessions as [window].",
               "Use /session N in Telegram to switch sessions.",
             ]);
           }
@@ -826,7 +826,7 @@ export default function (pi: ExtensionAPI) {
         if (ctx.hasUI) {
           ctx.ui.setWidget("telegram", undefined);
         }
-        notify("Paired. Use Telegram /session to access all sessions.", "info");
+        notify("Paired. Use Telegram /sessions to access all sessions.", "info");
         return;
       }
 

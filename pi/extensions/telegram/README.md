@@ -53,7 +53,7 @@ First time:
 ## Usage (in Telegram)
 
 - `/pin 123456` – complete global pairing
-- `/session` – list sessions
+- `/sessions` – list sessions
 - `/session new [path]` – create a new headless session in `/path`, `~/path`, or the system temp directory if omitted
 - `/session N` – switch active session and replay unread replies (or the latest completed reply if none are unread)
 - `/session quit` – quit the current headless session
@@ -64,7 +64,7 @@ First time:
 
 ## Notes
 
-- Attached interactive pi windows appear in Telegram `/session` as `[window]` sessions.
+- Attached interactive pi windows appear in Telegram `/sessions` as `[window]` sessions.
 - `/session new [path]` creates daemon-owned `[headless]` sessions.
 - Headless sessions are owned by the daemon and are terminated on `/unpair` or daemon shutdown.
 - Switching to a session replays unread replies, not just the latest one.
