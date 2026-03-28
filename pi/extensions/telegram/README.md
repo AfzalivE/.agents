@@ -28,17 +28,15 @@ Example:
 
 ## Usage (in pi)
 
-- Pair Telegram globally (starts the daemon and registers this window):
+- Pair Telegram globally (starts the daemon and registers this window session):
 
 ```text
 /telegram pair
 ```
 
 First time:
-- pi will ask for the bot token and save it (one time)
+- pi will ask for the bot token and save it
 - pi will show a 6-digit PIN
-
-Once paired, all open pi windows auto-register and appear in Telegram `/windows`.
 
 - Status:
 
@@ -46,7 +44,7 @@ Once paired, all open pi windows auto-register and appear in Telegram `/windows`
 /telegram status
 ```
 
-- Unpair globally (revokes Telegram pairing and disconnects all windows):
+- Unpair globally (revokes Telegram pairing, disconnects attached windows, and terminates headless sessions):
 
 ```text
 /telegram unpair
@@ -54,23 +52,26 @@ Once paired, all open pi windows auto-register and appear in Telegram `/windows`
 
 ## Usage (in Telegram)
 
-- `/pin 123456` – complete global pairing (6-digit PIN from `/telegram pair`)
-
-Once paired:
-
-- `/windows` – list connected pi windows
-- `/window N` – switch active window and replay its last completed turn
-- `/unpair` – unpair Telegram and disconnect all windows
-- `/esc` – abort current run in the active window
-- plain text – send to active window (queued as follow-up if the agent is busy)
+- `/pin 123456` – complete global pairing
+- `/session` – list sessions
+- `/session new [path]` – create a new headless session in `/path`, `~/path`, or the system temp directory if omitted
+- `/session N` – switch active session and replay unread replies (or the latest completed reply if none are unread)
+- `/session quit` – quit the current headless session
+- `/session quit N` – quit a specific headless session
+- `/unpair` – unpair Telegram and terminate headless sessions
+- `/esc` – abort current run in the active session
+- plain text – send to the active session (queued as follow-up if the agent is busy)
 
 ## Notes
 
-- The daemon is started on-demand by `/telegram pair`, auto-restarts when a paired window opens, and auto-stops ~60s after the last window disconnects.
-- While paired, all open pi windows auto-register with Telegram `/windows`.
-- On daemon startup, bot commands are synced via Telegram `setMyCommands` so slash-command autocomplete is available in the app.
-- Output mirrored to Telegram is the assistant’s final text at `turn_end` (no tool output in this first version).
-  - For short messages we try Telegram `Markdown` formatting; if Telegram rejects the formatting, we fall back to plain text.
+- Attached interactive pi windows appear in Telegram `/session` as `[window]` sessions.
+- `/session new [path]` creates daemon-owned `[headless]` sessions.
+- Headless sessions are owned by the daemon and are terminated on `/unpair` or daemon shutdown.
+- Switching to a session replays unread replies, not just the latest one.
+- Inactive-session activity notifications are deduped for the same session until you switch sessions, a different session notifies, or the cooldown elapses.
+- The daemon is started on-demand by `/telegram pair`, auto-restarts when a paired window opens, and stays alive while paired so Telegram can create headless sessions even when no windows are connected.
+- Output mirrored to Telegram is the assistant’s final text at `turn_end`.
+  - For short messages we try Telegram `Markdown` formatting; if Telegram rejects it, we fall back to plain text.
   - Long messages are sent as plain text chunks.
-- System/daemon messages (e.g. window switch notifications) are sent in italics.
-- While the active window is busy (agent running), the daemon sends Telegram `typing…` chat actions periodically.
+- System/daemon messages are sent in italics.
+- While the active session is busy, the daemon sends Telegram `typing…` chat actions periodically.

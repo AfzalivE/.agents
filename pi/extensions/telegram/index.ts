@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import fsp from "node:fs/promises";
 import { spawn } from "node:child_process";
+import { extractTextFromMessage } from "./message-text.mjs";
 
 const AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
 const RUN_DIR = path.join(AGENT_DIR, "run");
@@ -14,7 +15,7 @@ const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
 const AUTO_CONNECT_INTERVAL_MS = 3_000;
 
 type DaemonToClientMessage =
-  | { type: "registered"; windowNo: number }
+  | { type: "registered"; sessionNo: number }
   | { type: "pin"; code: string; expiresAt: number }
   | { type: "paired"; chatId: number }
   | { type: "error"; error: string }
@@ -146,23 +147,6 @@ function parseArgs(args: string | undefined): string[] {
   return trimmed.split(/\s+/g);
 }
 
-function extractTextFromMessage(message: any): string {
-  const content = message?.content;
-  if (typeof content === "string") return content.trim();
-  if (Array.isArray(content)) {
-    return content
-      .map((c) => {
-        if (!c) return "";
-        if (typeof c === "string") return c;
-        if (c.type === "text" && typeof c.text === "string") return c.text;
-        return "";
-      })
-      .join("")
-      .trim();
-  }
-  return "";
-}
-
 function jsonlWrite(socket: net.Socket, msg: ClientToDaemonMessage) {
   socket.write(JSON.stringify(msg) + "\n");
 }
@@ -209,7 +193,11 @@ async function ensureDaemonRunning(daemonPath: string, signal?: AbortSignal): Pr
   const child = spawn(process.execPath, [daemonPath], {
     detached: true,
     stdio: "ignore",
-    env: { ...process.env },
+    env: {
+      ...process.env,
+      PI_TELEGRAM_PI_EXECUTABLE: process.execPath,
+      PI_TELEGRAM_PI_ENTRYPOINT: process.argv[1] ?? "",
+    },
   });
   child.unref();
 
@@ -260,13 +248,15 @@ async function sendEphemeral(msg: ClientToDaemonMessage): Promise<void> {
 }
 
 export default function (pi: ExtensionAPI) {
+  if (process.env.PI_TELEGRAM_DISABLE === "1") return;
+
   const extensionDir = path.dirname(fileURLToPath(import.meta.url));
   const daemonPath = path.join(extensionDir, "daemon.mjs");
 
   const state = {
     socket: null as net.Socket | null,
     windowId: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    windowNo: null as number | null,
+    sessionNo: null as number | null,
     busy: false,
     lastCtx: null as ExtensionContext | null,
     connectPromise: null as Promise<void> | null,
@@ -285,15 +275,15 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.setWidget("telegram", undefined);
   }
 
-  function connectedStatusText(ctx: ExtensionContext, windowNo: number): string {
-    const text = `telegram (window ${windowNo})`;
+  function connectedStatusText(ctx: ExtensionContext, sessionNo: number): string {
+    const text = `telegram (session ${sessionNo})`;
     return ctx.hasUI ? ctx.ui.theme.fg("dim", text) : text;
   }
 
   function disconnect(restartAutoConnect = true) {
     const socket = state.socket;
     state.socket = null;
-    state.windowNo = null;
+    state.sessionNo = null;
     clearUI(state.lastCtx);
 
     if (restartAutoConnect) {
@@ -392,7 +382,7 @@ export default function (pi: ExtensionAPI) {
       const onSocketGone = () => {
         if (state.socket === socket) {
           state.socket = null;
-          state.windowNo = null;
+          state.sessionNo = null;
           clearUI(state.lastCtx);
           startAutoConnectLoop();
           void tryAutoConnect();
@@ -508,10 +498,10 @@ export default function (pi: ExtensionAPI) {
     }
 
     if (msg.type === "registered") {
-      state.windowNo = msg.windowNo;
+      state.sessionNo = msg.sessionNo;
       stopAutoConnectLoop();
       if (state.lastCtx?.hasUI) {
-        state.lastCtx.ui.setStatus("telegram", connectedStatusText(state.lastCtx, msg.windowNo));
+        state.lastCtx.ui.setStatus("telegram", connectedStatusText(state.lastCtx, msg.sessionNo));
       }
       return;
     }
@@ -614,7 +604,7 @@ export default function (pi: ExtensionAPI) {
         const lines = [
           `Config: token ${tokenState}, ${paired}`,
           `Daemon: ${daemonUp ? "running" : "not running"}`,
-          `This window: ${isSocketConnected() && state.windowNo !== null ? `connected (window ${state.windowNo})` : "not connected"}`,
+          `This window: ${isSocketConnected() && state.sessionNo !== null ? `connected (session ${state.sessionNo})` : "not connected"}`,
         ];
         notify(lines.join("\n"), "info");
         return;
@@ -637,7 +627,7 @@ export default function (pi: ExtensionAPI) {
 
         disconnect();
 
-        notify("Unpaired Telegram and disconnected all windows. Run /telegram pair to pair again.", "info");
+        notify("Unpaired Telegram and disconnected all sessions. Run /telegram pair to pair again.", "info");
         return;
       }
 
@@ -670,8 +660,8 @@ export default function (pi: ExtensionAPI) {
         }
 
         updateMeta(ctx);
-        if (ctx.hasUI && state.windowNo !== null) {
-          ctx.ui.setStatus("telegram", connectedStatusText(ctx, state.windowNo));
+        if (ctx.hasUI && state.sessionNo !== null) {
+          ctx.ui.setStatus("telegram", connectedStatusText(ctx, state.sessionNo));
         }
 
         const freshCfg = await loadConfig();
@@ -698,8 +688,8 @@ export default function (pi: ExtensionAPI) {
             ctx.ui.notify(`Send this in Telegram: /pin ${pin.code} (valid 60s)`, "info");
             ctx.ui.setWidget("telegram", [
               `Telegram pairing: send /pin ${pin.code} (valid 60s)`,
-              "All open pi windows will appear in Telegram /windows.",
-              "Use /window N in Telegram to switch windows.",
+              "All open pi windows will appear in Telegram /session as [window].",
+              "Use /session N in Telegram to switch sessions.",
             ]);
           }
           return;
@@ -708,7 +698,7 @@ export default function (pi: ExtensionAPI) {
         if (ctx.hasUI) {
           ctx.ui.setWidget("telegram", undefined);
         }
-        notify("Paired. Use Telegram /windows to access all pi windows.", "info");
+        notify("Paired. Use Telegram /session to access all sessions.", "info");
         return;
       }
 

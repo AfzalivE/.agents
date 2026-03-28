@@ -4,7 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import net from "node:net";
 import process from "node:process";
+import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import TelegramBot from "node-telegram-bot-api";
+import { extractTextFromMessage } from "./message-text.mjs";
 
 const AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
 const RUN_DIR = path.join(AGENT_DIR, "run");
@@ -14,9 +17,9 @@ const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
 
 const TELEGRAM_COMMANDS = [
   { command: "pin", description: "Pair this chat with pi using a 6-digit PIN" },
-  { command: "windows", description: "List connected pi windows" },
-  { command: "esc", description: "Abort current run in active window" },
-  { command: "unpair", description: "Unpair Telegram and disconnect all windows" },
+  { command: "session", description: "List, switch, create, or quit sessions" },
+  { command: "esc", description: "Abort current run in active session" },
+  { command: "unpair", description: "Unpair Telegram and terminate headless sessions" },
   { command: "help", description: "Show available commands" },
 ];
 
@@ -26,6 +29,16 @@ const POLLING_RESTART_THRESHOLD = 3;
 const POLLING_ERROR_WINDOW_MS = 120_000;
 const POLLING_RESTART_DELAY_MS = 1_000;
 const POLLING_STOP_TIMEOUT_MS = 4_000;
+const ACTIVITY_NOTICE_COOLDOWN_MS = 60 * 60 * 1000;
+const UNPAIRED_IDLE_SHUTDOWN_MS = 60_000;
+const HEADLESS_START_TIMEOUT_MS = 10_000;
+const HEADLESS_STOP_TIMEOUT_MS = 5_000;
+const HEADLESS_ABORT_TIMEOUT_MS = 60_000;
+const MAX_UNREAD_TURNS_PER_SESSION = 20;
+const MAX_QUEUED_HEADLESS_PROMPTS = 20;
+const PI_EXECUTABLE = process.env.PI_TELEGRAM_PI_EXECUTABLE || "pi";
+const PI_ENTRYPOINT = process.env.PI_TELEGRAM_PI_ENTRYPOINT?.trim() || undefined;
+const RESOLVED_TMPDIR = await fsp.realpath(os.tmpdir()).catch(() => os.tmpdir());
 
 async function loadConfig() {
   try {
@@ -61,6 +74,26 @@ function makeJsonlWriter(socket) {
   };
 }
 
+function attachJsonlReader(stream, onMessage) {
+  stream.setEncoding("utf8");
+  let buffer = "";
+
+  stream.on("data", (chunk) => {
+    buffer += chunk;
+
+    while (true) {
+      const newlineIndex = buffer.indexOf("\n");
+      if (newlineIndex === -1) break;
+
+      let line = buffer.slice(0, newlineIndex);
+      buffer = buffer.slice(newlineIndex + 1);
+      if (line.endsWith("\r")) line = line.slice(0, -1);
+      if (line.trim().length === 0) continue;
+      onMessage(line);
+    }
+  });
+}
+
 function chunkText(text, max = 3500) {
   const chunks = [];
   let i = 0;
@@ -94,6 +127,489 @@ function isLikelyNetworkPollingError(error) {
   ];
 
   return networkCodes.some((code) => message.includes(code));
+}
+
+function getCommandError(response, fallback) {
+  if (response && typeof response.error === "string" && response.error.trim()) return response.error.trim();
+  return fallback;
+}
+
+function autoCancelExtensionUiRequest(request, write) {
+  if (!request || request.type !== "extension_ui_request" || typeof request.id !== "string") return false;
+
+  write({ type: "extension_ui_response", id: request.id, cancelled: true });
+  return true;
+}
+
+function createHeadlessRpcClient(cwd) {
+  const childArgs = PI_ENTRYPOINT ? [PI_ENTRYPOINT, "--mode", "rpc"] : ["--mode", "rpc"];
+  const child = spawn(PI_EXECUTABLE, childArgs, {
+    cwd,
+    env: { ...process.env, PI_TELEGRAM_DISABLE: "1" },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+
+  const write = child.stdin
+    ? makeJsonlWriter(child.stdin)
+    : () => {
+        throw new Error("Headless pi session transport is unavailable.");
+      };
+  const eventHandlers = new Set();
+  const responseHandlers = new Set();
+  const closeHandlers = new Set();
+  const pending = new Map();
+  const closed = Promise.withResolvers();
+  let nextRequestId = 1;
+  let stopPromise = null;
+  let transportClosed = false;
+
+  function createExitError(code, signal) {
+    return new Error(
+      `Headless pi session exited${code !== null ? ` with code ${code}` : ""}${signal ? ` (signal ${signal})` : ""}`,
+    );
+  }
+
+  function finishTransportClose(error, meta = { code: null, signal: null }) {
+    if (transportClosed) return;
+    transportClosed = true;
+
+    const message = errorMessage(error);
+    for (const { resolve, timeout } of pending.values()) {
+      clearTimeout(timeout);
+      resolve({ type: "response", success: false, error: message });
+    }
+    pending.clear();
+
+    closed.resolve(meta);
+
+    for (const handler of [...closeHandlers]) {
+      try {
+        handler({ ...meta, error: message });
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  child.stdin?.on("error", () => {
+    // handled by transport close
+  });
+  child.on("error", (error) => {
+    finishTransportClose(error, { code: null, signal: null });
+  });
+
+  if (child.stdout) {
+    attachJsonlReader(child.stdout, (line) => {
+      const msg = safeJsonParse(line);
+      if (!msg || typeof msg.type !== "string") return;
+
+      if (msg.type === "response") {
+        for (const handler of [...responseHandlers]) {
+          try {
+            handler(msg);
+          } catch {
+            // ignore
+          }
+        }
+
+        const id = typeof msg.id === "string" ? msg.id : undefined;
+        if (!id) return;
+        const pendingRequest = pending.get(id);
+        if (!pendingRequest) return;
+        pending.delete(id);
+        clearTimeout(pendingRequest.timeout);
+        pendingRequest.resolve(msg);
+        return;
+      }
+
+      if (msg.type === "extension_ui_request") {
+        autoCancelExtensionUiRequest(msg, write);
+        return;
+      }
+
+      for (const handler of [...eventHandlers]) {
+        try {
+          handler(msg);
+        } catch {
+          // ignore
+        }
+      }
+    });
+  }
+
+  if (child.stderr) {
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => {
+      const text = String(chunk).trimEnd();
+      if (!text) return;
+      console.error(`[telegram/headless ${path.basename(cwd) || cwd}] ${text}`);
+    });
+  }
+
+  child.once("close", (code, signal) => {
+    finishTransportClose(createExitError(code, signal), { code, signal });
+  });
+
+  async function call(command, { timeoutMs = HEADLESS_START_TIMEOUT_MS } = {}) {
+    if (child.exitCode !== null) {
+      return {
+        type: "response",
+        success: false,
+        error: `Headless pi session already exited with code ${child.exitCode}`,
+      };
+    }
+
+    const id = `telegram-rpc-${nextRequestId++}`;
+    const payload = { ...command, id };
+
+    return await new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        pending.delete(id);
+        resolve({ type: "response", success: false, error: `Timed out waiting for ${command.type} response` });
+      }, timeoutMs);
+
+      pending.set(id, { resolve, timeout });
+
+      try {
+        write(payload);
+      } catch (error) {
+        pending.delete(id);
+        clearTimeout(timeout);
+        resolve({ type: "response", success: false, error: errorMessage(error) });
+      }
+    });
+  }
+
+  async function prompt(message, {
+    streamingBehavior = "followUp",
+    waitForStart = false,
+    timeoutMs = HEADLESS_START_TIMEOUT_MS,
+    onAccepted,
+    onStarted,
+    onFailed,
+  } = {}) {
+    if (child.exitCode !== null) {
+      throw new Error(`Headless pi session already exited with code ${child.exitCode}`);
+    }
+
+    const id = `telegram-rpc-${nextRequestId++}`;
+    const payload = { type: "prompt", message, streamingBehavior, id };
+
+    return await new Promise((resolve, reject) => {
+      let accepted = false;
+      let resolved = false;
+      let trackingActive = true;
+      const timeout = setTimeout(() => {
+        cleanup();
+        onFailed?.({ type: "response", id, success: false, error: "Timed out waiting for prompt response" });
+        reject(new Error(waitForStart ? "Timed out waiting for prompt to start" : "Timed out waiting for prompt response"));
+      }, timeoutMs);
+
+      const cleanup = () => {
+        if (!trackingActive) return;
+        trackingActive = false;
+        clearTimeout(timeout);
+        responseHandlers.delete(handleResponse);
+        eventHandlers.delete(handleEvent);
+        closeHandlers.delete(handleClose);
+      };
+
+      const resolveOnce = () => {
+        if (resolved) return;
+        resolved = true;
+        resolve({ id, success: true });
+      };
+
+      const rejectOnce = (error) => {
+        if (resolved) return;
+        resolved = true;
+        reject(error instanceof Error ? error : new Error(String(error)));
+      };
+
+      const handleResponse = (response) => {
+        if (response.id !== id) return;
+
+        if (response.success === false) {
+          cleanup();
+          onFailed?.(response);
+          rejectOnce(new Error(getCommandError(response, "Failed to send prompt to headless session")));
+          return;
+        }
+
+        if (accepted) return;
+        accepted = true;
+        onAccepted?.(id);
+
+        if (!waitForStart) {
+          cleanup();
+          resolveOnce();
+        }
+      };
+
+      const handleEvent = (event) => {
+        if (!accepted || event.type !== "agent_start") return;
+        onStarted?.(id);
+        cleanup();
+        resolveOnce();
+      };
+
+      const handleClose = ({ error }) => {
+        cleanup();
+        onFailed?.({ type: "response", id, success: false, error });
+        rejectOnce(new Error(error));
+      };
+
+      responseHandlers.add(handleResponse);
+      eventHandlers.add(handleEvent);
+      closeHandlers.add(handleClose);
+
+      try {
+        write(payload);
+      } catch (error) {
+        cleanup();
+        onFailed?.({ type: "response", id, success: false, error: errorMessage(error) });
+        rejectOnce(error);
+      }
+    });
+  }
+
+  async function stop() {
+    if (stopPromise) return await stopPromise;
+
+    stopPromise = (async () => {
+      if (child.exitCode !== null) return;
+
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        // ignore
+      }
+
+      const result = await Promise.race([
+        closed.promise,
+        sleep(HEADLESS_STOP_TIMEOUT_MS).then(() => null),
+      ]);
+
+      if (result !== null) return;
+      if (child.exitCode !== null) return;
+
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // ignore
+      }
+
+      await Promise.race([closed.promise, sleep(1_000)]);
+    })();
+
+    return await stopPromise;
+  }
+
+  return {
+    child,
+    call,
+    prompt,
+    stop,
+    onEvent(handler) {
+      eventHandlers.add(handler);
+      return () => eventHandlers.delete(handler);
+    },
+    onResponse(handler) {
+      responseHandlers.add(handler);
+      return () => responseHandlers.delete(handler);
+    },
+    onClose(handler) {
+      closeHandlers.add(handler);
+      return () => closeHandlers.delete(handler);
+    },
+  };
+}
+
+async function resolveHeadlessSessionPath(rawPath) {
+  const trimmed = rawPath.trim();
+  let expanded = trimmed;
+
+  if (!expanded) {
+    expanded = os.tmpdir();
+  } else if (expanded === "~") {
+    expanded = os.homedir();
+  } else if (expanded.startsWith("~/")) {
+    expanded = path.join(os.homedir(), expanded.slice(2));
+  } else if (!expanded.startsWith("/")) {
+    throw new Error("Path must start with / or ~ and refer to an existing directory.");
+  }
+
+  const resolved = path.resolve(expanded);
+  const realPath = await fsp.realpath(resolved).catch(() => resolved);
+  const stats = await fsp.stat(realPath).catch(() => null);
+  if (!stats || !stats.isDirectory()) {
+    throw new Error("Path must start with / or ~ and refer to an existing directory.");
+  }
+
+  return realPath;
+}
+
+let config = await loadConfig();
+if (!config || !config.botToken) {
+  console.error(`[telegram] Missing botToken in ${CONFIG_PATH}.`);
+  process.exit(1);
+}
+
+let bot = null;
+const sessions = new Map();
+let nextSessionNo = 1;
+let pairedChatId = config.pairedChatId;
+
+const chatState = {
+  activeSessionKey: undefined,
+  lastSeenSeqBySessionKey: {},
+  lastActivityNotice: undefined,
+};
+
+const pendingPins = new Map();
+
+let shutdownTimer = null;
+let typingTimer = null;
+let server = null;
+let shuttingDown = false;
+let pollingRestartInProgress = false;
+let consecutiveNetworkPollingErrors = 0;
+let lastNetworkPollingErrorAt = 0;
+
+function isAuthorizedChat(chatId) {
+  return pairedChatId !== undefined && chatId === pairedChatId;
+}
+
+function getActiveSession() {
+  if (!chatState.activeSessionKey) return null;
+  return sessions.get(chatState.activeSessionKey) ?? null;
+}
+
+function getSessionByNo(sessionNo) {
+  return [...sessions.values()].find((session) => session.sessionNo === sessionNo) ?? null;
+}
+
+function getDisplaySessionName(session) {
+  if (typeof session.sessionName === "string" && session.sessionName.trim()) return session.sessionName.trim();
+  if (session.kind === "headless" && session.cwd === RESOLVED_TMPDIR) return "tmp";
+  return path.basename(session.cwd || "") || session.cwd || "(unknown)";
+}
+
+function getUnreadCount(session) {
+  const lastSeen = chatState.lastSeenSeqBySessionKey[session.key] ?? 0;
+  return Math.max(0, session.lastTurnSeq - lastSeen);
+}
+
+function shouldSendActivityNotice(sessionKey, now = Date.now()) {
+  const lastNotice = chatState.lastActivityNotice;
+  if (!lastNotice) return true;
+  if (lastNotice.sessionKey !== sessionKey) return true;
+  return now - lastNotice.sentAt >= ACTIVITY_NOTICE_COOLDOWN_MS;
+}
+
+function recordActivityNotice(sessionKey, now = Date.now()) {
+  chatState.lastActivityNotice = { sessionKey, sentAt: now };
+}
+
+function clearActivityNotice(sessionKey) {
+  if (!sessionKey) return;
+  if (chatState.lastActivityNotice?.sessionKey === sessionKey) {
+    chatState.lastActivityNotice = undefined;
+  }
+}
+
+function markSessionSeen(session) {
+  chatState.lastSeenSeqBySessionKey[session.key] = session.lastTurnSeq;
+  session.unreadTurns = [];
+  session.droppedUnreadTurns = 0;
+}
+
+function removeSession(sessionKey) {
+  const session = sessions.get(sessionKey);
+  if (!session) return null;
+
+  sessions.delete(sessionKey);
+  delete chatState.lastSeenSeqBySessionKey[sessionKey];
+
+  if (chatState.activeSessionKey === sessionKey) {
+    chatState.activeSessionKey = undefined;
+  }
+
+  clearActivityNotice(sessionKey);
+  updateTypingIndicator();
+  void maybeShutdownSoon();
+  return session;
+}
+
+function stopTypingIndicator() {
+  if (typingTimer) {
+    clearInterval(typingTimer);
+    typingTimer = null;
+  }
+}
+
+function startTypingIndicator() {
+  if (typingTimer) return;
+
+  const tick = async () => {
+    if (!bot || !pairedChatId) return;
+    try {
+      await bot.sendChatAction(pairedChatId, "typing");
+    } catch {
+      // ignore
+    }
+  };
+
+  void tick();
+  typingTimer = setInterval(() => {
+    void tick();
+  }, 4_000);
+}
+
+function updateTypingIndicator() {
+  const session = getActiveSession();
+  if (!pairedChatId || !session || !session.busy) {
+    stopTypingIndicator();
+    return;
+  }
+  startTypingIndicator();
+}
+
+async function setPairedChatId(chatId) {
+  pairedChatId = chatId;
+  config = { ...config, pairedChatId: chatId };
+  await saveConfig(config);
+  updateTypingIndicator();
+}
+
+async function clearPairing() {
+  pairedChatId = undefined;
+  delete config.pairedChatId;
+  await saveConfig(config);
+  chatState.activeSessionKey = undefined;
+  chatState.lastSeenSeqBySessionKey = {};
+  chatState.lastActivityNotice = undefined;
+  updateTypingIndicator();
+}
+
+function disconnectAllWindowSessions() {
+  for (const session of sessions.values()) {
+    if (session.kind !== "window") continue;
+    void session.quit();
+  }
+}
+
+async function stopAllHeadlessSessions() {
+  const headlessSessions = [...sessions.values()].filter((session) => session.kind === "headless");
+  await Promise.all(
+    headlessSessions.map(async (session) => {
+      try {
+        await session.quit();
+      } catch {
+        // ignore
+      }
+    }),
+  );
 }
 
 function markPollingHealthy() {
@@ -133,106 +649,6 @@ async function restartPolling(reason) {
   }
 }
 
-let config = await loadConfig();
-if (!config || !config.botToken) {
-  console.error(`[telegram] Missing botToken in ${CONFIG_PATH}.`);
-  process.exit(1);
-}
-
-let bot = null;
-
-const windows = new Map();
-let nextWindowNo = 1;
-
-let pairedChatId = config.pairedChatId;
-
-const chatState = {
-  activeWindowId: undefined,
-  lastSeenSeqByWindowId: {},
-};
-
-const pendingPins = new Map();
-
-let shutdownTimer = null;
-let typingTimer = null;
-let server = null;
-let shuttingDown = false;
-let pollingRestartInProgress = false;
-let consecutiveNetworkPollingErrors = 0;
-let lastNetworkPollingErrorAt = 0;
-
-function isAuthorizedChat(chatId) {
-  return pairedChatId !== undefined && chatId === pairedChatId;
-}
-
-function getActiveWindow() {
-  if (!chatState.activeWindowId) return null;
-  return windows.get(chatState.activeWindowId) ?? null;
-}
-
-function stopTypingIndicator() {
-  if (typingTimer) {
-    clearInterval(typingTimer);
-    typingTimer = null;
-  }
-}
-
-function startTypingIndicator() {
-  if (typingTimer) return;
-
-  const tick = async () => {
-    if (!bot || !pairedChatId) return;
-    try {
-      await bot.sendChatAction(pairedChatId, "typing");
-    } catch {
-      // ignore
-    }
-  };
-
-  void tick();
-  typingTimer = setInterval(() => {
-    void tick();
-  }, 4000);
-}
-
-function updateTypingIndicator() {
-  const w = getActiveWindow();
-  if (!pairedChatId || !w || !w.busy) {
-    stopTypingIndicator();
-    return;
-  }
-  startTypingIndicator();
-}
-
-async function setPairedChatId(chatId) {
-  pairedChatId = chatId;
-  config = { ...config, pairedChatId: chatId };
-  await saveConfig(config);
-  updateTypingIndicator();
-}
-
-async function clearPairing() {
-  pairedChatId = undefined;
-  delete config.pairedChatId;
-  await saveConfig(config);
-  chatState.activeWindowId = undefined;
-  chatState.lastSeenSeqByWindowId = {};
-  updateTypingIndicator();
-}
-
-function disconnectAllWindows() {
-  for (const w of [...windows.values()]) {
-    try {
-      w.socket.end();
-    } catch {}
-    try {
-      w.socket.destroy();
-    } catch {}
-  }
-  windows.clear();
-  chatState.activeWindowId = undefined;
-}
-
 async function shutdownDaemon({ clearPairingState = false } = {}) {
   if (shuttingDown) return;
   shuttingDown = true;
@@ -241,15 +657,30 @@ async function shutdownDaemon({ clearPairingState = false } = {}) {
   if (clearPairingState) {
     try {
       await clearPairing();
-    } catch {}
+    } catch {
+      // ignore
+    }
   }
 
   stopTypingIndicator();
-  disconnectAllWindows();
+
+  try {
+    await stopAllHeadlessSessions();
+  } catch {
+    // ignore
+  }
+
+  disconnectAllWindowSessions();
+  sessions.clear();
+  chatState.activeSessionKey = undefined;
+  chatState.lastSeenSeqBySessionKey = {};
+  chatState.lastActivityNotice = undefined;
 
   try {
     await stopPollingWithTimeout("Telegram daemon shutdown");
-  } catch {}
+  } catch {
+    // ignore
+  }
 
   if (server) {
     await new Promise((resolve) => {
@@ -272,7 +703,9 @@ async function shutdownDaemon({ clearPairingState = false } = {}) {
 
   try {
     fs.unlinkSync(SOCKET_PATH);
-  } catch {}
+  } catch {
+    // ignore
+  }
 
   process.exit(0);
 }
@@ -287,24 +720,20 @@ function escapeHtml(text) {
 async function botSend(chatId, text, opts = {}) {
   if (!bot) return;
   const chunks = chunkText(text);
-  for (const c of chunks) {
-    await bot.sendMessage(chatId, c, opts);
+  for (const chunk of chunks) {
+    await bot.sendMessage(chatId, chunk, opts);
   }
 }
 
 async function botSendAssistant(chatId, text) {
   if (!bot) return;
 
-  // Telegram Markdown is a subset and chunking can break formatting.
-  // Keep it simple:
-  // - short messages: try Markdown, fallback to plain text if Telegram rejects it
-  // - long messages: send as plain text chunks
   if (text.length <= 3500) {
     try {
       await bot.sendMessage(chatId, text, { parse_mode: "Markdown" });
       return;
     } catch {
-      // fall back
+      // fall back to plain text
     }
   }
 
@@ -313,7 +742,6 @@ async function botSendAssistant(chatId, text) {
 
 async function botSendSystem(chatId, text) {
   if (!bot) return;
-  // Keep system messages short; avoid chunking to not split HTML entities/tags.
   const safe = escapeHtml(text);
   await bot.sendMessage(chatId, `<i>${safe}</i>`, { parse_mode: "HTML" });
 }
@@ -323,66 +751,288 @@ async function syncBotCommands() {
   try {
     await bot.setMyCommands(TELEGRAM_COMMANDS);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`[telegram] Failed to sync bot commands: ${message}`);
+    console.error(`[telegram] Failed to sync bot commands: ${errorMessage(error)}`);
   }
 }
 
-function listWindowsText() {
-  const list = [...windows.values()].sort((a, b) => a.windowNo - b.windowNo);
-  if (list.length === 0) return "No windows connected. Run /telegram pair in a pi window.";
+function listSessionsText() {
+  const list = [...sessions.values()].sort((a, b) => a.sessionNo - b.sessionNo);
+  if (list.length === 0) {
+    return "No sessions available. Use /session new [path] to start a headless session.";
+  }
 
-  const lines = [];
-  for (const w of list) {
-    const active = chatState.activeWindowId === w.windowId ? " *" : "";
-    const lastSeen = chatState.lastSeenSeqByWindowId[w.windowId] ?? 0;
-    const unread = (w.lastTurnSeq ?? 0) - lastSeen;
+  const lines = ["Sessions:"];
+  for (const session of list) {
+    const active = chatState.activeSessionKey === session.key ? " *" : "";
+    const unread = getUnreadCount(session);
     const unreadStr = unread > 0 ? ` [${unread} unread]` : "";
-    const name = w.sessionName || path.basename(w.cwd || "") || "(unknown)";
-    lines.push(`${w.windowNo}) ${name}${active}${unreadStr}`);
+    lines.push(`${session.sessionNo}) ${getDisplaySessionName(session)} [${session.kind}]${active}${unreadStr}`);
   }
-  return "Windows:\n" + lines.join("\n") + "\n\nUse /window N to switch.";
+
+  lines.push("", "Use /session N to switch.", "Use /session new [path] to start a headless session.");
+  return lines.join("\n");
 }
 
-async function switchWindow(chatId, windowNo) {
-  const target = [...windows.values()].find((w) => w.windowNo === windowNo);
-  if (!target) {
-    await botSend(chatId, `No such window: ${windowNo}. Use /windows.`);
+async function replayUnreadOrLatest(session, chatId) {
+  if (session.droppedUnreadTurns > 0) {
+    await botSendSystem(chatId, "Some older unread replies were omitted.");
+  }
+
+  if (session.unreadTurns.length > 0) {
+    for (const turn of session.unreadTurns) {
+      await botSendAssistant(chatId, turn.text);
+    }
+    markSessionSeen(session);
     return;
   }
 
-  chatState.activeWindowId = target.windowId;
-  chatState.lastSeenSeqByWindowId[target.windowId] = target.lastTurnSeq ?? 0;
+  if (session.lastTurnText) {
+    markSessionSeen(session);
+    await botSendAssistant(chatId, session.lastTurnText);
+    return;
+  }
+
+  markSessionSeen(session);
+  await botSendSystem(chatId, "(No completed turns yet in this session.)");
+}
+
+async function switchSession(chatId, sessionNo) {
+  const target = getSessionByNo(sessionNo);
+  if (!target) {
+    await botSend(chatId, `No such session: ${sessionNo}. Use /session.`);
+    return;
+  }
+
+  await refreshHeadlessSessionState(target);
+
+  chatState.activeSessionKey = target.key;
+  chatState.lastActivityNotice = undefined;
   updateTypingIndicator();
 
-  const name = target.sessionName || path.basename(target.cwd || "") || "(unknown)";
-  await botSendSystem(chatId, `Switched to window ${target.windowNo}: ${name}`);
+  await botSendSystem(chatId, `Switched to session ${target.sessionNo}: ${getDisplaySessionName(target)} [${target.kind}]`);
+  await replayUnreadOrLatest(target, chatId);
+}
 
-  if (target.lastTurnText) {
-    await botSendAssistant(chatId, target.lastTurnText);
-  } else {
-    await botSendSystem(chatId, "(No completed turns yet in this window.)");
+async function refreshHeadlessSessionState(session) {
+  if (!session || session.kind !== "headless") return;
+  const response = await session.rpc.call({ type: "get_state" }, { timeoutMs: HEADLESS_START_TIMEOUT_MS });
+  if (!response.success) return;
+
+  const data = response.data ?? {};
+  if (typeof data.sessionName === "string" && data.sessionName.trim()) {
+    session.sessionName = data.sessionName.trim();
+  } else if (session.sessionName) {
+    session.sessionName = undefined;
+  }
+
+  if (typeof data.isStreaming === "boolean") {
+    session.busy = data.isStreaming;
+    updateTypingIndicator();
   }
 }
 
-function sendToWindow(windowId, msg) {
-  if (!windowId) return false;
-  const w = windows.get(windowId);
-  if (!w) return false;
-  const send = makeJsonlWriter(w.socket);
-  send(msg);
-  return true;
+async function refreshHeadlessSessionStates(targets) {
+  await Promise.all(
+    targets
+      .filter((session) => session.kind === "headless")
+      .map((session) => refreshHeadlessSessionState(session).catch(() => {})),
+  );
 }
 
-function broadcastToWindows(msg) {
-  for (const w of windows.values()) {
-    const send = makeJsonlWriter(w.socket);
-    send(msg);
+async function recordCompletedTurn(session, text) {
+  if (!text.trim()) return;
+
+  session.lastTurnText = text;
+  session.lastTurnSeq += 1;
+
+  if (!pairedChatId) return;
+
+  if (chatState.activeSessionKey === session.key) {
+    markSessionSeen(session);
+    updateTypingIndicator();
+    await botSendAssistant(pairedChatId, text);
+    return;
+  }
+
+  session.unreadTurns.push({ seq: session.lastTurnSeq, text });
+  while (session.unreadTurns.length > MAX_UNREAD_TURNS_PER_SESSION) {
+    session.unreadTurns.shift();
+    session.droppedUnreadTurns += 1;
+  }
+
+  const now = Date.now();
+  if (shouldSendActivityNotice(session.key, now)) {
+    await botSendSystem(pairedChatId, `[session ${session.sessionNo}] new reply available (use /session ${session.sessionNo})`);
+    recordActivityNotice(session.key, now);
   }
 }
 
-function sendToActiveWindow(msg) {
-  return sendToWindow(chatState.activeWindowId, msg);
+async function createHeadlessSession(cwd) {
+  const rpc = createHeadlessRpcClient(cwd);
+
+  let stateResponse;
+  try {
+    const newSessionResponse = await rpc.call({ type: "new_session" }, { timeoutMs: HEADLESS_START_TIMEOUT_MS });
+    if (!newSessionResponse.success) {
+      throw new Error(getCommandError(newSessionResponse, "Failed to create headless session"));
+    }
+    if (newSessionResponse.data?.cancelled) {
+      throw new Error("Headless session creation was cancelled.");
+    }
+
+    stateResponse = await rpc.call({ type: "get_state" }, { timeoutMs: HEADLESS_START_TIMEOUT_MS });
+    if (!stateResponse.success) {
+      throw new Error(getCommandError(stateResponse, "Failed to inspect headless session state"));
+    }
+  } catch (error) {
+    await rpc.stop().catch(() => {});
+    throw error;
+  }
+
+  const session = {
+    key: `headless:${randomUUID()}`,
+    sessionNo: nextSessionNo++,
+    kind: "headless",
+    cwd,
+    sessionName:
+      typeof stateResponse.data?.sessionName === "string" && stateResponse.data.sessionName.trim()
+        ? stateResponse.data.sessionName.trim()
+        : undefined,
+    busy: Boolean(stateResponse.data?.isStreaming),
+    lastTurnText: undefined,
+    lastTurnSeq: 0,
+    unreadTurns: [],
+    droppedUnreadTurns: 0,
+    child: rpc.child,
+    rpc,
+    closing: false,
+    queuedPromptCount: 0,
+    pendingSendCount: 0,
+    sendQueue: Promise.resolve(),
+    async sendText(text) {
+      const backlogSize = session.pendingSendCount + session.queuedPromptCount;
+      if (backlogSize >= MAX_QUEUED_HEADLESS_PROMPTS) {
+        throw new Error("Session is busy. Too many queued prompts. Wait for it to catch up.");
+      }
+
+      session.pendingSendCount += 1;
+      const sendOperation = session.sendQueue
+        .then(async () => {
+          const waitForStart = !session.busy;
+          session.queuedPromptCount += 1;
+
+          await rpc.prompt(text, {
+            streamingBehavior: "followUp",
+            waitForStart,
+            timeoutMs: HEADLESS_START_TIMEOUT_MS,
+            onFailed: () => {
+              session.queuedPromptCount = Math.max(0, session.queuedPromptCount - 1);
+            },
+          });
+        })
+        .finally(() => {
+          session.pendingSendCount = Math.max(0, session.pendingSendCount - 1);
+        });
+
+      session.sendQueue = sendOperation.catch(() => {});
+      await sendOperation;
+    },
+    async abort() {
+      const response = await rpc.call({ type: "abort" }, { timeoutMs: HEADLESS_ABORT_TIMEOUT_MS });
+      if (!response.success) {
+        throw new Error(getCommandError(response, "Failed to abort headless session"));
+      }
+    },
+    async quit() {
+      if (session.closing) return;
+      session.closing = true;
+      try {
+        await session.abort();
+      } catch {
+        // ignore
+      }
+      await rpc.stop();
+    },
+  };
+
+  sessions.set(session.key, session);
+
+  rpc.onEvent((event) => {
+    if (!sessions.has(session.key)) return;
+
+    if (event.type === "agent_start") {
+      session.queuedPromptCount = Math.max(0, session.queuedPromptCount - 1);
+      session.busy = true;
+      updateTypingIndicator();
+      return;
+    }
+
+    if (event.type === "agent_end") {
+      session.busy = false;
+      updateTypingIndicator();
+      return;
+    }
+
+    if (event.type === "turn_end") {
+      const text = extractTextFromMessage(event.message);
+      if (!text) return;
+      void recordCompletedTurn(session, text).catch(() => {});
+    }
+  });
+
+  rpc.onClose(() => {
+    const removed = removeSession(session.key);
+    if (!removed || shuttingDown || session.closing) return;
+    if (!pairedChatId) return;
+    botSendSystem(pairedChatId, `Session ${session.sessionNo} ended: ${getDisplaySessionName(session)}`).catch(() => {});
+  });
+
+  updateTypingIndicator();
+  return session;
+}
+
+function broadcastToWindowSessions(msg) {
+  for (const session of sessions.values()) {
+    if (session.kind !== "window") continue;
+    makeJsonlWriter(session.socket)(msg);
+  }
+}
+
+async function handleSessionQuit(chatId, sessionNo) {
+  const target = sessionNo === undefined ? getActiveSession() : getSessionByNo(sessionNo);
+  if (!target) {
+    await botSend(
+      chatId,
+      sessionNo === undefined ? "No active session. Use /session then /session N." : `No such session: ${sessionNo}. Use /session.`,
+    );
+    return;
+  }
+
+  if (target.kind === "window") {
+    await botSend(chatId, "Cannot quit session attached to a window remotely.");
+    return;
+  }
+
+  const wasActive = chatState.activeSessionKey === target.key;
+  await target.quit();
+  removeSession(target.key);
+
+  await botSendSystem(chatId, `Quit session ${target.sessionNo}: ${getDisplaySessionName(target)}`);
+  if (wasActive && sessions.size > 0) {
+    await botSendSystem(chatId, "Use /session to choose another session.");
+  }
+}
+
+function sessionHelpText() {
+  return [
+    "/session - list sessions",
+    "/session new [path] - create a headless session in /path, ~/path, or the system temp directory if omitted",
+    "/session N - switch active session",
+    "/session quit - quit current headless session",
+    "/session quit N - quit a specific headless session",
+    "/esc - abort current run in active session",
+    "/unpair - unpair Telegram and terminate headless sessions",
+  ].join("\n");
 }
 
 async function handleTelegramMessage(msg) {
@@ -414,16 +1064,18 @@ async function handleTelegramMessage(msg) {
     await setPairedChatId(chatId);
     pendingPins.delete(code);
 
-    if (pending.windowId && windows.has(pending.windowId)) {
-      chatState.activeWindowId = pending.windowId;
-      const w = windows.get(pending.windowId);
-      chatState.lastSeenSeqByWindowId[pending.windowId] = w.lastTurnSeq ?? 0;
+    for (const session of sessions.values()) {
+      markSessionSeen(session);
+    }
+
+    if (pending.sessionKey && sessions.has(pending.sessionKey)) {
+      chatState.activeSessionKey = pending.sessionKey;
     }
 
     updateTypingIndicator();
-    broadcastToWindows({ type: "paired", chatId });
+    broadcastToWindowSessions({ type: "paired", chatId });
 
-    await botSend(chatId, "Paired successfully. Use /windows to list windows.");
+    await botSend(chatId, "Paired successfully. Use /session to list sessions.");
     return;
   }
 
@@ -433,36 +1085,53 @@ async function handleTelegramMessage(msg) {
   }
 
   if (text === "/help") {
-    await botSend(
-      chatId,
-      [
-        "The following commands are available:",
-        "",
-        "/windows - list windows",
-        "/window N - switch active window",
-        "/unpair - unpair and disconnnect all windows",
-        "/esc - abort run in active window",
-        "(plain text) - send to active window",
-      ].join("\n"),
-    );
+    await botSend(chatId, ["The following commands are available:", "", sessionHelpText(), "", "(plain text) - send to active session"].join("\n"));
     return;
   }
 
-  if (text === "/windows") {
-    await botSend(chatId, listWindowsText());
+  if (text === "/session") {
+    await refreshHeadlessSessionStates([...sessions.values()]);
+    await botSend(chatId, listSessionsText());
     return;
   }
 
-  const winMatch = text.match(/^\/window\s+(\d+)\s*$/);
-  if (winMatch) {
-    const n = Number(winMatch[1]);
-    await switchWindow(chatId, n);
+  const newMatch = text.match(/^\/session\s+new(?:\s+(.+))?\s*$/);
+  if (newMatch) {
+    try {
+      const cwd = await resolveHeadlessSessionPath(newMatch[1] ?? "");
+      const session = await createHeadlessSession(cwd);
+      chatState.activeSessionKey = session.key;
+      chatState.lastActivityNotice = undefined;
+      markSessionSeen(session);
+      updateTypingIndicator();
+      await botSendSystem(chatId, `Switched to session ${session.sessionNo}: ${getDisplaySessionName(session)} [headless]`);
+    } catch (error) {
+      await botSend(chatId, errorMessage(error));
+    }
+    return;
+  }
+
+  const quitMatch = text.match(/^\/session\s+quit(?:\s+(\d+))?\s*$/);
+  if (quitMatch) {
+    const sessionNo = quitMatch[1] ? Number(quitMatch[1]) : undefined;
+    await handleSessionQuit(chatId, sessionNo);
+    return;
+  }
+
+  const switchMatch = text.match(/^\/session\s+(\d+)\s*$/);
+  if (switchMatch) {
+    await switchSession(chatId, Number(switchMatch[1]));
+    return;
+  }
+
+  if (text.startsWith("/session")) {
+    await botSend(chatId, sessionHelpText());
     return;
   }
 
   if (text === "/unpair") {
     try {
-      await botSendSystem(chatId, "Unpaired Telegram. All windows disconnected. Run /telegram pair in pi to pair again.");
+      await botSendSystem(chatId, "Unpaired Telegram. All sessions disconnected. Run /telegram pair in pi to pair again.");
     } catch {
       // ignore
     }
@@ -471,33 +1140,44 @@ async function handleTelegramMessage(msg) {
   }
 
   if (text === "/esc") {
-    const sent = sendToActiveWindow({ type: "abort" });
-    if (!sent) await botSend(chatId, "No active window. Use /windows then /window N.");
+    const session = getActiveSession();
+    if (!session) {
+      await botSend(chatId, "No active session. Use /session then /session N.");
+      return;
+    }
+
+    try {
+      await session.abort();
+    } catch (error) {
+      await botSend(chatId, `Failed to abort session ${session.sessionNo}: ${errorMessage(error)}`);
+    }
     return;
   }
 
-  if (text.startsWith("/")) {
-    await botSend(chatId, "Unknown command. Use /help.");
+  const session = getActiveSession();
+  if (!session) {
+    await botSend(chatId, "No active session. Use /session then /session N.");
     return;
   }
 
-  const sent = sendToActiveWindow({ type: "inject", text });
-  if (!sent) {
-    await botSend(chatId, "No active window. Use /windows then /window N.");
+  try {
+    await session.sendText(text);
+  } catch (error) {
+    await botSend(chatId, `Failed to send to session ${session.sessionNo}: ${errorMessage(error)}`);
   }
 }
 
-
 async function maybeShutdownSoon() {
-  if (windows.size > 0) return;
+  if (pairedChatId !== undefined) return;
+  if (sessions.size > 0) return;
   if (shutdownTimer || shuttingDown) return;
 
   shutdownTimer = setTimeout(() => {
     shutdownTimer = null;
-    if (windows.size > 0 || shuttingDown) return;
-    console.error("[telegram] No clients connected, shutting down.");
+    if (pairedChatId !== undefined || sessions.size > 0 || shuttingDown) return;
+    console.error("[telegram] No sessions connected and daemon is unpaired, shutting down.");
     shutdownDaemon().catch(() => {});
-  }, 60_000);
+  }, UNPAIRED_IDLE_SHUTDOWN_MS);
 }
 
 function cancelShutdown() {
@@ -512,12 +1192,12 @@ async function startServer() {
 
   if (fs.existsSync(SOCKET_PATH)) {
     const ok = await new Promise((resolve) => {
-      const s = net.connect(SOCKET_PATH);
-      s.on("connect", () => {
-        s.end();
+      const socket = net.connect(SOCKET_PATH);
+      socket.on("connect", () => {
+        socket.end();
         resolve(true);
       });
-      s.on("error", () => resolve(false));
+      socket.on("error", () => resolve(false));
     });
     if (ok) {
       console.error("[telegram] Daemon already running.");
@@ -525,132 +1205,143 @@ async function startServer() {
     }
     try {
       fs.unlinkSync(SOCKET_PATH);
-    } catch {}
+    } catch {
+      // ignore
+    }
   }
 
   const srv = net.createServer((socket) => {
     cancelShutdown();
 
-    socket.setEncoding("utf8");
     const send = makeJsonlWriter(socket);
+    let sessionKey;
 
-    let buf = "";
-    let windowId;
+    attachJsonlReader(socket, (line) => {
+      const msg = safeJsonParse(line);
+      if (!msg || typeof msg.type !== "string") return;
 
-    socket.on("data", (data) => {
-      buf += data;
-      while (true) {
-        const idx = buf.indexOf("\n");
-        if (idx === -1) break;
-        const line = buf.slice(0, idx).trim();
-        buf = buf.slice(idx + 1);
-        if (!line) continue;
-        const msg = safeJsonParse(line);
-        if (!msg || typeof msg.type !== "string") continue;
+      switch (msg.type) {
+        case "register": {
+          const windowId = msg.windowId || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+          sessionKey = `window:${windowId}`;
+          const existing = sessions.get(sessionKey);
+          const sessionNo = existing?.sessionNo ?? nextSessionNo++;
 
-        switch (msg.type) {
-          case "register": {
-            windowId = msg.windowId || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-            const existing = windows.get(windowId);
-            const windowNo = existing?.windowNo ?? nextWindowNo++;
-            windows.set(windowId, {
-              windowId,
-              windowNo,
-              socket,
-              cwd: msg.cwd,
-              sessionName: msg.sessionName,
-              busy: !!msg.busy,
-              lastTurnText: existing?.lastTurnText,
-              lastTurnSeq: existing?.lastTurnSeq ?? 0,
-            });
-            send({
-              type: "registered",
-              windowNo,
-            });
-            updateTypingIndicator();
-            break;
+          if (existing?.kind === "window" && existing.socket !== socket) {
+            void existing.quit();
           }
 
-          case "meta": {
-            if (!windowId) break;
-            const w = windows.get(windowId);
-            if (!w) break;
-            w.cwd = msg.cwd ?? w.cwd;
-            w.sessionName = msg.sessionName ?? w.sessionName;
-            w.busy = !!msg.busy;
-            if (chatState.activeWindowId === windowId) updateTypingIndicator();
-            break;
-          }
-
-          case "request_pin": {
-            if (!windowId) {
-              send({ type: "error", error: "not_registered" });
-              break;
-            }
-            let code;
-            for (let i = 0; i < 10; i++) {
-              code = String(Math.floor(Math.random() * 1_000_000)).padStart(6, "0");
-              if (!pendingPins.has(code)) break;
-            }
-            const expiresAt = Date.now() + 60_000;
-            pendingPins.set(code, { windowId, expiresAt });
-
-            const cleanupTimer = setTimeout(() => {
-              const pending = pendingPins.get(code);
-              if (pending && pending.expiresAt <= Date.now()) {
-                pendingPins.delete(code);
+          const session = {
+            key: sessionKey,
+            sessionNo,
+            kind: "window",
+            windowId,
+            socket,
+            cwd: msg.cwd,
+            sessionName: msg.sessionName,
+            busy: !!msg.busy,
+            lastTurnText: existing?.lastTurnText,
+            lastTurnSeq: existing?.lastTurnSeq ?? 0,
+            unreadTurns: existing?.unreadTurns ?? [],
+            droppedUnreadTurns: existing?.droppedUnreadTurns ?? 0,
+            async sendText(text) {
+              if (socket.destroyed) throw new Error("Session is no longer connected.");
+              send({ type: "inject", text });
+            },
+            async abort() {
+              if (socket.destroyed) throw new Error("Session is no longer connected.");
+              send({ type: "abort" });
+            },
+            async quit() {
+              try {
+                socket.end();
+              } catch {
+                // ignore
               }
-            }, 60_000);
-            cleanupTimer.unref?.();
-
-            send({ type: "pin", code, expiresAt });
-            break;
-          }
-
-          case "shutdown": {
-            shutdownDaemon({ clearPairingState: true }).catch(() => {});
-            break;
-          }
-
-          case "turn_end": {
-            if (!windowId) break;
-            const w = windows.get(windowId);
-            if (!w) break;
-            const text = typeof msg.text === "string" ? msg.text : "";
-            if (!text.trim()) break;
-
-            w.lastTurnText = text;
-            w.lastTurnSeq = (w.lastTurnSeq ?? 0) + 1;
-
-            if (pairedChatId) {
-              if (chatState.activeWindowId === windowId) {
-                chatState.lastSeenSeqByWindowId[windowId] = w.lastTurnSeq;
-                botSendAssistant(pairedChatId, text).catch(() => {});
-              } else {
-                botSendSystem(pairedChatId, `[window ${w.windowNo}] new reply available (use /window ${w.windowNo})`).catch(() => {});
+              try {
+                socket.destroy();
+              } catch {
+                // ignore
               }
-            }
-            break;
-          }
+            },
+          };
 
-          default:
-            break;
+          sessions.set(sessionKey, session);
+          send({ type: "registered", sessionNo });
+          updateTypingIndicator();
+          break;
         }
+
+        case "meta": {
+          if (!sessionKey) break;
+          const session = sessions.get(sessionKey);
+          if (!session) break;
+          session.cwd = msg.cwd ?? session.cwd;
+          session.sessionName = msg.sessionName ?? session.sessionName;
+          session.busy = !!msg.busy;
+          if (chatState.activeSessionKey === sessionKey) updateTypingIndicator();
+          break;
+        }
+
+        case "request_pin": {
+          if (!sessionKey) {
+            send({ type: "error", error: "not_registered" });
+            break;
+          }
+
+          let code;
+          for (let i = 0; i < 10; i++) {
+            code = String(Math.floor(Math.random() * 1_000_000)).padStart(6, "0");
+            if (!pendingPins.has(code)) break;
+          }
+
+          const expiresAt = Date.now() + 60_000;
+          pendingPins.set(code, { sessionKey, expiresAt });
+
+          const cleanupTimer = setTimeout(() => {
+            const pending = pendingPins.get(code);
+            if (pending && pending.expiresAt <= Date.now()) {
+              pendingPins.delete(code);
+            }
+          }, 60_000);
+          cleanupTimer.unref?.();
+
+          send({ type: "pin", code, expiresAt });
+          break;
+        }
+
+        case "shutdown": {
+          shutdownDaemon({ clearPairingState: true }).catch(() => {});
+          break;
+        }
+
+        case "turn_end": {
+          if (!sessionKey) break;
+          const session = sessions.get(sessionKey);
+          if (!session) break;
+          const text = typeof msg.text === "string" ? msg.text : "";
+          if (!text.trim()) break;
+          void recordCompletedTurn(session, text).catch(() => {});
+          break;
+        }
+
+        default:
+          break;
       }
     });
 
     socket.on("close", () => {
-      if (windowId) {
-        const w = windows.get(windowId);
-        if (w && w.socket === socket) {
-          windows.delete(windowId);
-          if (chatState.activeWindowId === windowId) {
-            chatState.activeWindowId = undefined;
-          }
-        }
+      if (!sessionKey) {
+        void maybeShutdownSoon();
+        return;
       }
-      updateTypingIndicator();
-      maybeShutdownSoon().catch(() => {});
+
+      const current = sessions.get(sessionKey);
+      if (current && current.kind === "window" && current.socket === socket) {
+        removeSession(sessionKey);
+      }
+
+      void maybeShutdownSoon();
     });
 
     socket.on("error", () => {
@@ -659,9 +1350,9 @@ async function startServer() {
   });
 
   await new Promise((resolve, reject) => {
-    const onErr = (e) => {
+    const onErr = (error) => {
       srv.off("listening", onListen);
-      reject(e);
+      reject(error);
     };
     const onListen = () => {
       srv.off("error", onErr);
@@ -674,14 +1365,15 @@ async function startServer() {
 
   try {
     fs.chmodSync(SOCKET_PATH, 0o600);
-  } catch {}
+  } catch {
+    // ignore
+  }
 
   return srv;
 }
 
 server = await startServer();
 
-// Start bot polling only after we've acquired the single-instance socket.
 bot = new TelegramBot(config.botToken, {
   polling: {
     params: {
@@ -695,10 +1387,10 @@ bot = new TelegramBot(config.botToken, {
 
 void syncBotCommands();
 bot.on("polling_error", (error) => {
-  const msg = errorMessage(error);
+  const message = errorMessage(error);
 
   if (!isLikelyNetworkPollingError(error)) {
-    console.error(`[telegram] polling_error: ${msg}`);
+    console.error(`[telegram] polling_error: ${message}`);
     markPollingHealthy();
     return;
   }
@@ -712,17 +1404,17 @@ bot.on("polling_error", (error) => {
   consecutiveNetworkPollingErrors += 1;
 
   console.error(
-    `[telegram] polling_error (network ${consecutiveNetworkPollingErrors}/${POLLING_RESTART_THRESHOLD}): ${msg}`,
+    `[telegram] polling_error (network ${consecutiveNetworkPollingErrors}/${POLLING_RESTART_THRESHOLD}): ${message}`,
   );
 
   if (consecutiveNetworkPollingErrors >= POLLING_RESTART_THRESHOLD) {
-    void restartPolling(`Detected repeated network polling errors`);
+    void restartPolling("Detected repeated network polling errors");
   }
 });
 
 bot.on("message", (msg) => {
   markPollingHealthy();
-  handleTelegramMessage(msg).catch((e) => console.error("[telegram] telegram handler error", e));
+  handleTelegramMessage(msg).catch((error) => console.error("[telegram] telegram handler error", error));
 });
 
 updateTypingIndicator();
