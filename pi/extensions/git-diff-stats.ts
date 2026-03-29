@@ -6,6 +6,7 @@ import path from "node:path";
 
 const STATUS_KEY = "0-git-diff-stats";
 const REFRESH_DEBOUNCE_MS = 250;
+const WRITE_REFRESH_DEBOUNCE_MS = 1_000;
 
 type DiffStats = {
   added: number;
@@ -254,7 +255,7 @@ export default function gitDiffStatsExtension(pi: ExtensionAPI) {
     ctx = nextCtx;
 
     if (isEditToolResult(event) || isWriteToolResult(event)) {
-      scheduleRefresh(0);
+      scheduleRefresh(WRITE_REFRESH_DEBOUNCE_MS);
     }
   });
 
