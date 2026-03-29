@@ -91,7 +91,7 @@ const DEFAULT_CONFIG: SandboxConfig = {
 
 const STATUS_KEY = "sandbox";
 const SANDBOX_BLOCK_LIMIT = 50;
-const METADATA_TRAVERSAL_PROCESSES = new Set(["find", "ls"]);
+const METADATA_TRAVERSAL_PROCESSES = new Set(["find", "ls", "fd", "fdfind"]);
 const GIT_METADATA_DIR_CACHE = new Map<string, string | null>();
 
 // --- Types ---
