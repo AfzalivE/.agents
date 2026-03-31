@@ -17,8 +17,7 @@ const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
 
 const TELEGRAM_COMMANDS = [
   { command: "pin", description: "Pair this chat with pi using a 6-digit PIN" },
-  { command: "sessions", description: "List sessions" },
-  { command: "session", description: "Switch, create, or quit sessions" },
+  { command: "session", description: "List, switch, create, or quit sessions" },
   { command: "esc", description: "Abort current run in active session" },
   { command: "unpair", description: "Unpair Telegram and terminate headless sessions" },
   { command: "help", description: "Show available commands" },
@@ -840,13 +839,16 @@ async function syncBotCommands() {
   }
 }
 
-function listSessionsText() {
+async function sendSessionList(chatId) {
+  await refreshHeadlessSessionStates([...sessions.values()]);
+
   const list = [...sessions.values()].sort((a, b) => a.sessionNo - b.sessionNo);
   if (list.length === 0) {
-    return "No sessions available. Use /session new [path] to start a headless session.";
+    await botSend(chatId, "No sessions. Use /session new [path] to start one.");
+    return;
   }
 
-  const lines = ["Sessions:"];
+  const lines = [];
   for (const session of list) {
     const active = chatState.activeSessionKey === session.key ? " *" : "";
     const unread = getUnreadCount(session);
@@ -854,8 +856,20 @@ function listSessionsText() {
     lines.push(`${session.sessionNo}) ${getDisplaySessionName(session)} [${session.kind}]${active}${unreadStr}`);
   }
 
-  lines.push("", "Use /session N to switch.", "Use /session new [path] to start a headless session.");
-  return lines.join("\n");
+  const buttons = list.map((session) => {
+    const name = getDisplaySessionName(session);
+    const label = name.length > 15 ? `${session.sessionNo}: ${name.slice(0, 13)}…` : `${session.sessionNo}: ${name}`;
+    return { text: label, callback_data: `session:${session.sessionNo}` };
+  });
+
+  const rows = [];
+  for (let i = 0; i < buttons.length; i += 2) {
+    rows.push(buttons.slice(i, i + 2));
+  }
+
+  await botSend(chatId, lines.join("\n"), {
+    reply_markup: { inline_keyboard: rows },
+  });
 }
 
 async function replayUnreadOrLatest(session, chatId) {
@@ -884,7 +898,7 @@ async function replayUnreadOrLatest(session, chatId) {
 async function switchSession(chatId, sessionNo) {
   const target = getSessionByNo(sessionNo);
   if (!target) {
-    await botSend(chatId, `No such session: ${sessionNo}. Use /sessions.`);
+    await botSend(chatId, `No such session: ${sessionNo}. Use /session to list.`);
     return;
   }
 
@@ -955,7 +969,16 @@ async function recordCompletedTurn(session, text) {
 
   const now = Date.now();
   if (shouldSendActivityNotice(session.key, now)) {
-    await botSendSystem(pairedChatId, `[session ${session.sessionNo}] new reply available (use /session ${session.sessionNo})`);
+    const notice = escapeHtml(`[session ${session.sessionNo}] new reply available`);
+    await botSend(pairedChatId, `<i>${notice}</i>`, {
+      parse_mode: "HTML",
+      reply_markup: {
+        inline_keyboard: [[{
+          text: `Switch to session ${session.sessionNo}`,
+          callback_data: `session:${session.sessionNo}`,
+        }]],
+      },
+    });
     recordActivityNotice(session.key, now);
   }
 }
@@ -1176,7 +1199,7 @@ async function handleSessionQuit(chatId, sessionNo) {
   if (!target) {
     await botSend(
       chatId,
-      sessionNo === undefined ? "No active session. Use /sessions then /session N." : `No such session: ${sessionNo}. Use /sessions.`,
+      sessionNo === undefined ? "No active session. Use /session to list." : `No such session: ${sessionNo}. Use /session to list.`,
     );
     return;
   }
@@ -1192,17 +1215,16 @@ async function handleSessionQuit(chatId, sessionNo) {
 
   await botSendSystem(chatId, `Quit session ${target.sessionNo}: ${getDisplaySessionName(target)}`);
   if (wasActive && sessions.size > 0) {
-    await botSendSystem(chatId, "Use /sessions to choose another session.");
+    await botSendSystem(chatId, "Use /session to choose another session.");
   }
 }
 
 function sessionHelpText() {
   return [
-    "/sessions - list sessions",
+    "/session - list sessions",
     "/session new [path] - create a headless session in /path, ~/path, or the system temp directory if omitted; reply Yes to create a missing directory",
     "/session N - switch active session",
-    "/session quit - quit current headless session",
-    "/session quit N - quit a specific headless session",
+    "/session quit [N] - quit a headless session",
     "/esc - abort current run in active session",
     "/unpair - unpair Telegram and terminate headless sessions",
   ].join("\n");
@@ -1247,7 +1269,7 @@ async function handleTelegramMessage(msg) {
     updateTypingIndicator();
     broadcastToWindowSessions({ type: "paired", chatId });
 
-    await botSend(chatId, "Paired successfully. Use /sessions to list sessions.");
+    await botSend(chatId, "Paired successfully. Use /session to list sessions.");
     return;
   }
 
@@ -1267,9 +1289,13 @@ async function handleTelegramMessage(msg) {
     return;
   }
 
+  if (text === "/session") {
+    await sendSessionList(chatId);
+    return;
+  }
+
   if (text === "/sessions") {
-    await refreshHeadlessSessionStates([...sessions.values()]);
-    await botSend(chatId, listSessionsText());
+    await botSend(chatId, "Unknown command. Use /session.");
     return;
   }
 
@@ -1307,7 +1333,7 @@ async function handleTelegramMessage(msg) {
     return;
   }
 
-  if (text.startsWith("/session")) {
+  if (/^\/session(?:\s|$)/.test(text)) {
     await botSend(chatId, sessionHelpText());
     return;
   }
@@ -1325,7 +1351,7 @@ async function handleTelegramMessage(msg) {
   if (text === "/esc") {
     const session = getActiveSession();
     if (!session) {
-      await botSend(chatId, "No active session. Use /sessions then /session N.");
+      await botSend(chatId, "No active session. Use /session to list.");
       return;
     }
 
@@ -1339,7 +1365,7 @@ async function handleTelegramMessage(msg) {
 
   const session = getActiveSession();
   if (!session) {
-    await botSend(chatId, "No active session. Use /sessions then /session N.");
+    await botSend(chatId, "No active session. Use /session to list.");
     return;
   }
 
@@ -1612,6 +1638,26 @@ bot.on("polling_error", (error) => {
 bot.on("message", (msg) => {
   markPollingHealthy();
   handleTelegramMessage(msg).catch((error) => console.error("[telegram] telegram handler error", error));
+});
+
+bot.on("callback_query", (query) => {
+  markPollingHealthy();
+  (async () => {
+    const chatId = query.message?.chat?.id;
+    if (!chatId || !isAuthorizedChat(chatId)) {
+      try { await bot.answerCallbackQuery(query.id, { text: "Not authorized" }); } catch {}
+      return;
+    }
+
+    const match = query.data?.match(/^session:(\d+)$/);
+    if (!match) {
+      try { await bot.answerCallbackQuery(query.id); } catch {}
+      return;
+    }
+
+    try { await bot.answerCallbackQuery(query.id); } catch {}
+    await switchSession(chatId, Number(match[1]));
+  })().catch((error) => console.error("[telegram] callback query error", error));
 });
 
 updateTypingIndicator();
