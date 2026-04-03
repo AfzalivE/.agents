@@ -359,7 +359,9 @@ function loadOverrideConfig(cwd: string, overrideConfigPath: string): LoadedSand
   const resolvedPath = resolveSandboxConfigPath(cwd, overrideConfigPath);
 
   if (!existsSync(resolvedPath)) {
-    throw new Error(`Sandbox override config not found: ${resolvedPath}`);
+    console.error(`Specified sandbox override config not found: ${resolvedPath}`);
+    // Pi logs and swallows session_start errors, so startup must terminate explicitly here.
+    process.exit(1);
   }
 
   let overrideConfig: Partial<SandboxConfig>;
@@ -367,7 +369,9 @@ function loadOverrideConfig(cwd: string, overrideConfigPath: string): LoadedSand
     overrideConfig = JSON.parse(readFileSync(resolvedPath, "utf-8"));
   } catch (error) {
     const message = error instanceof Error ? error.message : `${error}`;
-    throw new Error(`Could not parse sandbox override config ${resolvedPath}: ${message}`);
+    console.error(`Could not parse sandbox override config ${resolvedPath}: ${message}`);
+    // Pi logs and swallows session_start errors, so startup must terminate explicitly here.
+    process.exit(1);
   }
 
   return {
@@ -2023,7 +2027,13 @@ export default function (pi: ExtensionAPI) {
           }
 
           const sandboxConfigOverride = getStringFlag(pi, "sandbox-config");
-          const loadedConfig = loadConfig(ctx.cwd, sandboxConfigOverride);
+          let loadedConfig: LoadedSandboxConfig;
+          try {
+            loadedConfig = loadConfig(ctx.cwd, sandboxConfigOverride);
+          } catch (error) {
+            notify(ctx, error instanceof Error ? error.message : `${error}`, "error");
+            return;
+          }
           sandboxConfigPaths = loadedConfig.paths;
           const parseErrors = getSandboxConfigParseErrors(sandboxConfigPaths);
           if (parseErrors.length > 0) {
