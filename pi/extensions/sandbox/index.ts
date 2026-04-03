@@ -9,6 +9,9 @@
  * - ~/.pi/agent/sandbox.json (global)
  * - <cwd>/.pi/sandbox.json (project-local)
  *
+ * If `--sandbox-config <path>` is provided, that file replaces the global/project
+ * config files for the session. Relative paths resolve from the session cwd.
+ *
  * Note: list fields are overridden (replaced), not concatenated.
  *
  * Example .pi/sandbox.json:
@@ -31,6 +34,7 @@
  * Usage:
  * - `pi -e ./sandbox` - sandbox enabled with default/config settings
  * - `pi -e ./sandbox --no-sandbox` - disable sandboxing
+ * - `pi -e ./sandbox --sandbox-config ./sandbox.json` - use a custom sandbox config file
  * - `/sandbox` - show command help
  *
  * Setup:
@@ -129,7 +133,7 @@ type SandboxBlockReason =
   | "already-approved-still-failed"
   | "unknown";
 type SandboxConfigPathStatus = "loaded" | "parse-error";
-type SandboxConfigPathLabel = "Global" | "Project";
+type SandboxConfigPathLabel = "Global" | "Project" | "Override";
 
 type PromptStatus = "completed" | "error";
 type UiLevel = "info" | "warning" | "error";
@@ -241,6 +245,10 @@ function showHelp(ctx: ExtensionContext): void {
     "  /sandbox mode <interactive|non-interactive>",
     "  /sandbox network <allow|deny> <add|remove> <domain>",
     "  /sandbox filesystem <deny-read|allow-write|deny-write> <add|remove> <path>",
+    "",
+    "Startup flags:",
+    "  --no-sandbox",
+    "  --sandbox-config <path>",
   ];
   notify(ctx, lines.join("\n"), "info");
 }
@@ -276,6 +284,19 @@ function normalizeSubcommand(token?: string): string | undefined {
   }
 }
 
+function getStringFlag(pi: ExtensionAPI, name: string): string | undefined {
+  const value = pi.getFlag(name);
+  if (typeof value !== "string") return undefined;
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function resolveSandboxConfigPath(cwd: string, configPath: string): string {
+  const expanded = configPath.startsWith("~/") ? join(homedir(), configPath.slice(2)) : configPath;
+  return resolve(cwd, expanded);
+}
+
 function coerceStringArray(value: unknown, fallback: string[], field: string): string[] {
   if (!Array.isArray(value)) {
     console.error(`Warning: Expected ${field} to be a string[]; using defaults.`);
@@ -295,7 +316,71 @@ function coerceStringArray(value: unknown, fallback: string[], field: string): s
   return cleaned;
 }
 
-function loadConfig(cwd: string): LoadedSandboxConfig {
+function finalizeConfig(config: SandboxConfig): SandboxConfig {
+  return {
+    ...config,
+    enabled: typeof config.enabled === "boolean" ? config.enabled : DEFAULT_CONFIG.enabled,
+    mode: normalizePromptMode(config.mode),
+    network: {
+      ...config.network,
+      allowedDomains: coerceStringArray(
+        config.network?.allowedDomains,
+        DEFAULT_CONFIG.network.allowedDomains,
+        "network.allowedDomains",
+      ),
+      deniedDomains: coerceStringArray(
+        config.network?.deniedDomains,
+        DEFAULT_CONFIG.network.deniedDomains,
+        "network.deniedDomains",
+      ),
+    },
+    filesystem: {
+      ...config.filesystem,
+      denyRead: coerceStringArray(
+        config.filesystem?.denyRead,
+        DEFAULT_CONFIG.filesystem.denyRead,
+        "filesystem.denyRead",
+      ),
+      allowWrite: coerceStringArray(
+        config.filesystem?.allowWrite,
+        DEFAULT_CONFIG.filesystem.allowWrite,
+        "filesystem.allowWrite",
+      ),
+      denyWrite: coerceStringArray(
+        config.filesystem?.denyWrite,
+        DEFAULT_CONFIG.filesystem.denyWrite,
+        "filesystem.denyWrite",
+      ),
+    },
+  };
+}
+
+function loadOverrideConfig(cwd: string, overrideConfigPath: string): LoadedSandboxConfig {
+  const resolvedPath = resolveSandboxConfigPath(cwd, overrideConfigPath);
+
+  if (!existsSync(resolvedPath)) {
+    throw new Error(`Sandbox override config not found: ${resolvedPath}`);
+  }
+
+  let overrideConfig: Partial<SandboxConfig>;
+  try {
+    overrideConfig = JSON.parse(readFileSync(resolvedPath, "utf-8"));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : `${error}`;
+    throw new Error(`Could not parse sandbox override config ${resolvedPath}: ${message}`);
+  }
+
+  return {
+    config: finalizeConfig(deepMerge(DEFAULT_CONFIG, overrideConfig)),
+    paths: [{ label: "Override", path: resolvedPath, status: "loaded" }],
+  };
+}
+
+function loadConfig(cwd: string, overrideConfigPath?: string): LoadedSandboxConfig {
+  if (overrideConfigPath) {
+    return loadOverrideConfig(cwd, overrideConfigPath);
+  }
+
   const projectConfigPath = join(cwd, ".pi", "sandbox.json");
   const globalConfigPath = join(homedir(), ".pi", "agent", "sandbox.json");
 
@@ -326,42 +411,7 @@ function loadConfig(cwd: string): LoadedSandboxConfig {
   const merged = deepMerge(deepMerge(DEFAULT_CONFIG, globalConfig), projectConfig);
 
   return {
-    config: {
-      ...merged,
-      enabled: typeof merged.enabled === "boolean" ? merged.enabled : DEFAULT_CONFIG.enabled,
-      mode: normalizePromptMode(merged.mode),
-      network: {
-        ...merged.network,
-        allowedDomains: coerceStringArray(
-          merged.network?.allowedDomains,
-          DEFAULT_CONFIG.network.allowedDomains,
-          "network.allowedDomains",
-        ),
-        deniedDomains: coerceStringArray(
-          merged.network?.deniedDomains,
-          DEFAULT_CONFIG.network.deniedDomains,
-          "network.deniedDomains",
-        ),
-      },
-      filesystem: {
-        ...merged.filesystem,
-        denyRead: coerceStringArray(
-          merged.filesystem?.denyRead,
-          DEFAULT_CONFIG.filesystem.denyRead,
-          "filesystem.denyRead",
-        ),
-        allowWrite: coerceStringArray(
-          merged.filesystem?.allowWrite,
-          DEFAULT_CONFIG.filesystem.allowWrite,
-          "filesystem.allowWrite",
-        ),
-        denyWrite: coerceStringArray(
-          merged.filesystem?.denyWrite,
-          DEFAULT_CONFIG.filesystem.denyWrite,
-          "filesystem.denyWrite",
-        ),
-      },
-    },
+    config: finalizeConfig(merged),
     paths,
   };
 }
@@ -1603,6 +1653,11 @@ export default function (pi: ExtensionAPI) {
     default: false,
   });
 
+  pi.registerFlag("sandbox-config", {
+    description: "Use a custom sandbox config file for this session (replaces global/project sandbox.json files)",
+    type: "string",
+  });
+
   let sessionCwd = process.cwd();
   let sandboxState: SandboxState = { status: "pending" };
   let promptMode: PromptMode = DEFAULT_PROMPT_MODE;
@@ -1853,7 +1908,8 @@ export default function (pi: ExtensionAPI) {
     resetRuntimeState();
     rebuildBashTools(ctx.cwd);
 
-    const loadedConfig = loadConfig(ctx.cwd);
+    const sandboxConfigOverride = getStringFlag(pi, "sandbox-config");
+    const loadedConfig = loadConfig(ctx.cwd, sandboxConfigOverride);
     sandboxConfigPaths = loadedConfig.paths;
     const parseErrors = getSandboxConfigParseErrors(sandboxConfigPaths);
     if (parseErrors.length > 0) {
@@ -1966,7 +2022,8 @@ export default function (pi: ExtensionAPI) {
             return;
           }
 
-          const loadedConfig = loadConfig(ctx.cwd);
+          const sandboxConfigOverride = getStringFlag(pi, "sandbox-config");
+          const loadedConfig = loadConfig(ctx.cwd, sandboxConfigOverride);
           sandboxConfigPaths = loadedConfig.paths;
           const parseErrors = getSandboxConfigParseErrors(sandboxConfigPaths);
           if (parseErrors.length > 0) {
