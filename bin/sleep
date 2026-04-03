@@ -6,8 +6,18 @@ ARCHIVE_DIR="${VAULT_DIR}/archive"
 AGENTS_DIR="${HOME}/.agents"
 CONFIG_FILE="${AGENTS_DIR}/config/sleep.yaml"
 SRT_SETTINGS="${AGENTS_DIR}/config/sleep-srt.json"
+PI_SANDBOX_EXTENSION="${HOME}/.pi/agent/extensions/sandbox"
+
+DEFAULT_RUNNER="claude"
+DEFAULT_WEAKEN_DAYS=60
+DEFAULT_ARCHIVE_DAYS=90
 
 DRY_RUN=0
+CHECK_ONLY=0
+RUNNER="$DEFAULT_RUNNER"
+WEAKEN_DAYS="$DEFAULT_WEAKEN_DAYS"
+ARCHIVE_DAYS="$DEFAULT_ARCHIVE_DAYS"
+declare -a PROTECTED=("Index.md")
 
 usage() {
   cat <<'EOF'
@@ -22,62 +32,174 @@ Options:
 
 Dependencies:
   yq        brew install yq
-  srt       npm install -g @anthropic-ai/sandbox-runtime
-  claude    npm install -g @anthropic-ai/claude-code
   git       (should already be installed)
+  srt       npm install -g @anthropic-ai/sandbox-runtime (if runner=claude)
+  claude    npm install -g @anthropic-ai/claude-code (if runner=claude)
+  pi        npm install -g @mariozechner/pi-coding-agent (if runner=pi)
 
 EOF
 }
 
+validate_runner() {
+  case "$RUNNER" in
+    claude|pi) ;;
+    *)
+      echo "error: unsupported runner '$RUNNER' in $CONFIG_FILE (expected: claude or pi)" >&2
+      exit 1
+      ;;
+  esac
+}
+
+print_dep_status() {
+  local cmd="$1"
+  local required="$2"
+  local missing_ref="$3"
+  local status=""
+
+  if command -v "$cmd" &>/dev/null; then
+    status="✓ $(command -v "$cmd")"
+  elif [[ "$required" -eq 1 ]]; then
+    status="✗ missing"
+    printf -v "$missing_ref" '%s' 1
+  else
+    status="- optional"
+  fi
+
+  printf "  %-10s %s\n" "$cmd" "$status"
+}
+
 check_deps() {
   local missing=0
-  for cmd in yq srt claude git; do
-    if command -v "$cmd" &>/dev/null; then
-      printf "  %-10s ✓ %s\n" "$cmd" "$(command -v "$cmd")"
-    else
-      printf "  %-10s ✗ missing\n" "$cmd"
-      missing=1
-    fi
-  done
+
+  echo "Configured runner: $RUNNER"
+  print_dep_status yq 1 missing
+  print_dep_status git 1 missing
+
+  case "$RUNNER" in
+    claude)
+      print_dep_status srt 1 missing
+      print_dep_status claude 1 missing
+      print_dep_status pi 0 missing
+      ;;
+    pi)
+      print_dep_status srt 0 missing
+      print_dep_status claude 0 missing
+      print_dep_status pi 1 missing
+      ;;
+  esac
+
   exit "$missing"
 }
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --dry-run) DRY_RUN=1; shift ;;
-    --check) check_deps ;;
-    -h|--help) usage; exit 0 ;;
-    *) echo "error: unknown argument: $1" >&2; usage >&2; exit 2 ;;
-  esac
-done
+parse_config() {
+  local val=""
+  local file=""
 
-# --- Parse config ---
-WEAKEN_DAYS=60
-ARCHIVE_DAYS=90
-declare -a PROTECTED=("Index.md")
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    validate_runner
+    return
+  fi
 
-if [[ -f "$CONFIG_FILE" ]]; then
   if ! command -v yq &>/dev/null; then
     echo "error: yq not found — install with: brew install yq" >&2
     exit 1
   fi
+
+  val=$(yq '.runner' "$CONFIG_FILE" 2>/dev/null || true)
+  [[ -n "$val" && "$val" != "null" ]] && RUNNER="$val"
+
   val=$(yq '.thresholds.weaken_days' "$CONFIG_FILE" 2>/dev/null || true)
   [[ -n "$val" && "$val" != "null" ]] && WEAKEN_DAYS="$val"
+
   val=$(yq '.thresholds.archive_days' "$CONFIG_FILE" 2>/dev/null || true)
   [[ -n "$val" && "$val" != "null" ]] && ARCHIVE_DAYS="$val"
 
   while IFS= read -r file; do
     [[ -n "$file" && "$file" != "null" ]] && PROTECTED+=("$file")
   done < <(yq '.protected_files[]' "$CONFIG_FILE" 2>/dev/null || true)
-fi
+
+  validate_runner
+}
 
 is_protected() {
   local name="$1"
+  local p=""
+
   for p in "${PROTECTED[@]}"; do
     [[ "$name" == "$p" ]] && return 0
   done
   return 1
 }
+
+maintenance_prompt() {
+  cat <<'EOF'
+Use the `sleep` skill to perform vault maintenance based on the SLEEP_AUDIT below. Work autonomously: plan changes, apply them, and commit. If nothing meaningful needs changing, say so and exit.
+EOF
+}
+
+run_claude_maintenance() {
+  local -a cmd=(
+    srt
+    --settings "$SRT_SETTINGS"
+    claude -p
+    --dangerously-skip-permissions
+    --allowedTools "Read,Edit,Write,Glob,Grep,Bash\(git:*,mv:*,mkdir:*\)"
+    --model opus
+    --max-budget-usd 1.00
+    --verbose
+  )
+
+  # Prevent nested Claude from detecting it's inside an outer Claude Code session,
+  # which changes its behavior (e.g., tool availability, permission handling).
+  unset CLAUDECODE 2>/dev/null || true
+
+  printf '%s\n\nSLEEP_AUDIT:\n%s' "$(maintenance_prompt)" "$audit" \
+    | "${cmd[@]}"
+}
+
+run_pi_maintenance() {
+  local prompt=""
+  local -a cmd=(
+    pi
+    -e "$PI_SANDBOX_EXTENSION"
+    --skill "${AGENTS_DIR}/skills/sleep"
+    --tools read,bash,edit,write,grep,find,ls
+    --no-session
+    --verbose
+    -p
+  )
+
+  if [[ ! -d "$PI_SANDBOX_EXTENSION" ]]; then
+    echo "error: Pi sandbox extension not found at $PI_SANDBOX_EXTENSION" >&2
+    echo "Run ~/.agents/bin/sync first so the repo-managed sandbox extension is available to Pi." >&2
+    exit 1
+  fi
+
+  prompt=$(printf '%s\n\nSLEEP_AUDIT:\n%s' "$(maintenance_prompt)" "$audit")
+  "${cmd[@]}" "$prompt"
+}
+
+run_agent_maintenance() {
+  case "$RUNNER" in
+    claude) run_claude_maintenance ;;
+    pi) run_pi_maintenance ;;
+  esac
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run) DRY_RUN=1; shift ;;
+    --check) CHECK_ONLY=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "error: unknown argument: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+parse_config
+
+if [[ "$CHECK_ONLY" -eq 1 ]]; then
+  check_deps
+fi
 
 # --- Collect MOC files ---
 moc_files=("$VAULT_DIR/Index.md")
@@ -88,6 +210,8 @@ done
 is_linked_in_moc() {
   local basename="$1"
   local link_name="${basename%.md}"
+  local moc=""
+
   for moc in "${moc_files[@]}"; do
     [[ -f "$moc" ]] && grep -q "\[\[${link_name}\]\]" "$moc" && return 0
   done
@@ -162,6 +286,7 @@ done
 audit="=== Agent Brain Sleep Audit ===
 Files: ${total_files} (${strong_count} strong, ${weak_count} weak, ${dormant_count} dormant)
 Total size: $(( total_size / 1024 ))KB
+Runner: ${RUNNER}
 Thresholds: weaken=${WEAKEN_DAYS}d, archive=${ARCHIVE_DAYS}d
 
 Candidates for attention:"
@@ -214,8 +339,7 @@ if [[ ${#WEAKEN_LIST[@]} -eq 0 && ${#ARCHIVE_LIST[@]} -eq 0 && ${#LARGE_LIST[@]}
   exit 0
 fi
 
-# --- Invoke Claude inside srt sandbox ---
-if ! command -v srt &>/dev/null; then
+if [[ "$RUNNER" == "claude" ]] && ! command -v srt &>/dev/null; then
   echo "error: srt not found — install with: npm install -g @anthropic-ai/sandbox-runtime" >&2
   exit 1
 fi
@@ -224,34 +348,23 @@ LOG_DIR="${AGENTS_DIR}/logs"
 mkdir -p "$LOG_DIR"
 LOG_FILE="${LOG_DIR}/sleep-$(date +%Y-%m-%d).log"
 
-echo "Invoking Claude inside srt sandbox for vault maintenance..."
+if [[ "$RUNNER" == "claude" ]]; then
+  echo "Invoking $RUNNER inside srt sandbox for vault maintenance..."
+else
+  echo "Invoking $RUNNER with Pi sandbox extension for vault maintenance..."
+fi
 echo "Log: $LOG_FILE"
 
 cd "$VAULT_DIR"
 
-# Prevent nested Claude from detecting it's inside an outer Claude Code session,
-# which changes its behavior (e.g., tool availability, permission handling).
-unset CLAUDECODE 2>/dev/null || true
-
 # Pipe prompt via stdin to avoid srt's shell re-interpreting special characters
-# in the audit text (parentheses, etc.). Double-escape allowedTools parens/globs
-# so they survive srt's bash -c layer.
+# in the audit text (parentheses, etc.).
 {
   echo "=== Sleep run: $(date) ==="
   echo ""
   echo "$audit"
   echo ""
-  printf '%s\n\nSLEEP_AUDIT:\n%s' \
-    "Run the /sleep skill to perform vault maintenance based on the SLEEP_AUDIT below. Work autonomously — plan changes, apply them, and commit. If nothing meaningful needs changing, say so and exit." \
-    "$audit" \
-  | srt --settings "$SRT_SETTINGS" \
-    claude -p \
-    --dangerously-skip-permissions \
-    --allowedTools "Read,Edit,Write,Glob,Grep,Bash\(git:*,mv:*,mkdir:*\)" \
-    --model sonnet \
-    --max-budget-usd 1.00 \
-    --verbose \
-    2>&1
+  run_agent_maintenance 2>&1
   echo ""
   echo "=== Finished: $(date) ==="
 } 2>&1 | tee -a "$LOG_FILE"
