@@ -138,6 +138,7 @@ type FilesystemList = "deny-read" | "allow-write" | "deny-write";
 
 type FilesystemViolationKind = "read" | "write" | "unknown";
 type FilesystemReadAccess = "metadata" | "data" | "unknown";
+type FilesystemViolationResolutionKind = "allow-retry" | "allow-adapt" | "deny";
 
 interface SandboxBlock {
   timestamp: number;
@@ -167,6 +168,16 @@ interface FilesystemViolation {
   processName?: string;
   readAccess?: FilesystemReadAccess;
 }
+
+type FilesystemViolationResolution =
+  | {
+      kind: "allow-retry";
+      message: string;
+      retryFailureMessage: string;
+      retrySkippedMessage: string;
+    }
+  | { kind: "allow-adapt"; message: string }
+  | { kind: "deny"; message: string };
 
 // --- Helpers ---
 
@@ -724,6 +735,72 @@ function formatFilesystemViolationSummary(violation: FilesystemViolation): strin
   return "[sandbox] Blocked filesystem access (EPERM).";
 }
 
+const FILESYSTEM_ALLOW_RETRY_OPTION = "Allow and retry now";
+const FILESYSTEM_ALLOW_ADAPT_OPTION = "Allow but adapt for side-effects";
+const FILESYSTEM_DENY_OPTION = "Deny";
+
+function getFilesystemPromptOptions(
+  violation: FilesystemViolation,
+  autoRetryAvailable: boolean,
+): string[] {
+  if (!autoRetryAvailable) {
+    return [FILESYSTEM_ALLOW_ADAPT_OPTION, FILESYSTEM_DENY_OPTION];
+  }
+
+  if (violation.kind === "read") {
+    return [FILESYSTEM_ALLOW_RETRY_OPTION, FILESYSTEM_ALLOW_ADAPT_OPTION, FILESYSTEM_DENY_OPTION];
+  }
+
+  return [FILESYSTEM_ALLOW_ADAPT_OPTION, FILESYSTEM_ALLOW_RETRY_OPTION, FILESYSTEM_DENY_OPTION];
+}
+
+function parseFilesystemPromptSelection(
+  selection: string | undefined,
+  autoRetryAvailable: boolean,
+): FilesystemViolationResolutionKind {
+  if (selection === FILESYSTEM_ALLOW_ADAPT_OPTION) return "allow-adapt";
+  if (selection === FILESYSTEM_ALLOW_RETRY_OPTION && autoRetryAvailable) return "allow-retry";
+  return "deny";
+}
+
+function formatFilesystemAllowRetryMessage(target: string): string {
+  return `[sandbox] Allowed filesystem ${target} for this session. Automatically retrying.`;
+}
+
+function formatFilesystemAllowAdaptMessage(target: string): string {
+  return `[sandbox] Allowed filesystem ${target} for this session. Adapt the command for possible side effects, and then try again.`;
+}
+
+function formatFilesystemDeniedMessage(target: string): string {
+  return `[sandbox] Filesystem ${target} remains blocked for this session.`;
+}
+
+function formatFilesystemAlreadyAllowedMessage(target: string): string {
+  return `[sandbox] Filesystem ${target} is already allowed for this session. The remaining failure is likely unrelated to sandbox filesystem policy. Inspect the remaining error, adapt the command if needed, and then try again.`;
+}
+
+function formatFilesystemRetryFailedMessage(target: string): string {
+  return `[sandbox] Automatic retry still failed. Filesystem ${target} is now allowed for this session. Adapt the command for possible side effects, and then try again.`;
+}
+
+function formatFilesystemRetrySkippedMessage(target: string): string {
+  return `[sandbox] Automatic retry was skipped because the command timeout was already exhausted. Filesystem ${target} is now allowed for this session. Adapt the command for possible side effects, and then try again.`;
+}
+
+function appendOutputPostamble(postamble: string, addition: string, output: string): string {
+  if (!addition) return postamble;
+
+  const needsSeparator =
+    postamble.length > 0 ? !postamble.endsWith("\n") : output.length > 0 && !output.endsWith("\n");
+
+  return `${postamble}${needsSeparator ? "\n" : ""}${addition}`;
+}
+
+function ensureTrailingNewline(text: string): string {
+  if (!text || text.endsWith("\n")) return text;
+  return `${text}\n`;
+}
+
 async function handleFilesystemViolation(options: {
   pi: ExtensionAPI;
   ctx: ExtensionContext | null;
@@ -733,11 +810,12 @@ async function handleFilesystemViolation(options: {
   rawOutput: string;
   command: string;
   cwd?: string;
-  pendingPrompts?: Map<string, Promise<string | null>>;
+  pendingPrompts?: Map<string, Promise<FilesystemViolationResolution | null>>;
   applyRuntimeConfigForSession?: (ctx: ExtensionContext, runtimeConfig: SandboxRuntimeConfig) => void;
   existingViolationCount?: number;
   recordBlock?: (block: SandboxBlock) => void;
-}): Promise<string | null> {
+  autoRetryAvailable?: boolean;
+}): Promise<FilesystemViolationResolution | null> {
   const {
     pi,
     ctx,
@@ -751,6 +829,7 @@ async function handleFilesystemViolation(options: {
     applyRuntimeConfigForSession,
     existingViolationCount,
     recordBlock,
+    autoRetryAvailable = true,
   } = options;
   const violations = detectFilesystemViolations(output, rawOutput, existingViolationCount ?? 0);
   if (violations.length === 0) return null;
@@ -779,40 +858,53 @@ async function handleFilesystemViolation(options: {
     suggestedCommand: allowCommand ?? undefined,
   });
 
-  const commandInfo = `\n[sandbox] Blocked command: ${command}`;
-  const retryHint = "\n[sandbox] Retry running the command (or an updated one if there could be side effects).";
-
   if (promptMode === "non-interactive" || !ctx?.hasUI) {
-    if (!allowCommand) return summary;
-    return `${summary}\n[sandbox] To temporarily allow for this session, run: ${allowCommand}`;
+    if (!allowCommand) return { kind: "deny", message: summary };
+    return {
+      kind: "deny",
+      message: `${summary}\n[sandbox] To temporarily allow for this session, run: ${allowCommand}`,
+    };
   }
 
-  if (!allowAction || !allowCommand) return summary;
+  if (!allowAction || !allowCommand) return { kind: "deny", message: summary };
 
   if (alreadyApproved) {
-    return `[sandbox] Filesystem ${target} is already allowed for this session. The remaining failure is likely unrelated to sandbox filesystem policy.`;
+    return { kind: "allow-adapt", message: formatFilesystemAlreadyAllowedMessage(target) };
   }
 
-  const promptKey = allowCommand;
+  const promptKey = `${allowCommand}:${autoRetryAvailable ? "retry" : "adapt"}`;
   const existingPrompt = pendingPrompts?.get(promptKey);
   if (existingPrompt) return existingPrompt;
 
-  const promptTask = (async () => {
+  const promptTask: Promise<FilesystemViolationResolution | null> = (async () => {
     try {
-      const approved = await withPromptSignal(pi, () =>
-        ctx.ui.confirm(`Sandbox blocked filesystem ${target}`, "\nAllow for this session?"),
+      const selection = await withPromptSignal(pi, () =>
+        ctx.ui.select(`Sandbox blocked filesystem ${target}`, getFilesystemPromptOptions(violation, autoRetryAvailable)),
       );
-      if (!approved) return null;
+      const decision = parseFilesystemPromptSelection(selection, autoRetryAvailable);
+      if (decision === "deny") {
+        return { kind: "deny", message: formatFilesystemDeniedMessage(target) };
+      }
 
       const nextConfig = cloneRuntimeConfig(runtimeConfig);
       const changed = applyFilesystemAllowAction(nextConfig, allowAction);
-
       if (changed) {
         applyRuntimeConfigForSession?.(ctx, nextConfig);
-        return `[sandbox] Allowed filesystem ${target} for this session.${commandInfo}${retryHint}`;
       }
 
-      return `[sandbox] Filesystem ${target} is already allowed for this session.${commandInfo}${retryHint}`;
+      if (decision === "allow-retry") {
+        return {
+          kind: "allow-retry",
+          message: formatFilesystemAllowRetryMessage(target),
+          retryFailureMessage: formatFilesystemRetryFailedMessage(target),
+          retrySkippedMessage: formatFilesystemRetrySkippedMessage(target),
+        };
+      }
+
+      return {
+        kind: "allow-adapt",
+        message: changed ? formatFilesystemAllowAdaptMessage(target) : formatFilesystemAlreadyAllowedMessage(target),
+      };
     } catch {
       return null;
     }
@@ -841,6 +933,17 @@ interface BashAttemptResult {
   exitCode: number | null;
   combinedOutput: string;
   interruptedByFilesystemViolation: boolean;
+}
+
+interface ProcessedSandboxAttempt {
+  exitCode: number | null;
+  postamble: string;
+  resolution: FilesystemViolationResolution | null;
+}
+
+interface PreparedSandboxAttempt {
+  attempt: BashAttemptResult;
+  existingViolationCount: number;
 }
 
 function killProcessGroup(child: ReturnType<typeof spawn>, signal: NodeJS.Signals = "SIGKILL"): void {
@@ -888,7 +991,7 @@ function maybeAllowGitMetadataWriteForSession(options: {
 
 function createSandboxedBashOps(options: SandboxedBashOpsOptions): BashOperations {
   const { pi, getContext, getRuntimeConfig, getPromptMode, applyRuntimeConfigForSession, recordBlock } = options;
-  const pendingFilesystemPrompts = new Map<string, Promise<string | null>>();
+  const pendingFilesystemPrompts = new Map<string, Promise<FilesystemViolationResolution | null>>();
 
   let executionQueue: Promise<void> = Promise.resolve();
 
@@ -1027,6 +1130,102 @@ function createSandboxedBashOps(options: SandboxedBashOpsOptions): BashOperation
     });
   }
 
+  function getRemainingTimeout(timeout: number | undefined, startedAt: number): number | undefined {
+    if (timeout === undefined) return undefined;
+
+    const remainingMs = timeout * 1000 - (Date.now() - startedAt);
+    return Math.max(0, remainingMs / 1000);
+  }
+
+  function reportPostProcessingError(error: unknown): void {
+    const message = `[sandbox] Post-processing error: ${error instanceof Error ? error.message : error}`;
+    const ctx = getContext();
+    if (ctx) notify(ctx, message, "warning");
+    else console.warn(message);
+  }
+
+  async function prepareAndRunSandboxAttempt(options: {
+    command: string;
+    cwd: string;
+    onData: (data: Buffer) => void;
+    signal?: AbortSignal;
+    timeout?: number;
+    env?: NodeJS.ProcessEnv;
+  }): Promise<PreparedSandboxAttempt> {
+    const { command, cwd, onData, signal, timeout, env } = options;
+
+    maybeAllowGitMetadataWriteForSession({
+      ctx: getContext(),
+      cwd,
+      runtimeConfig: getRuntimeConfig(),
+      applyRuntimeConfigForSession,
+    });
+
+    const wrappedCommand = await SandboxManager.wrapWithSandbox(command);
+    const existingViolationCount = SandboxManager.getSandboxViolationStore().getViolationsForCommand(command).length;
+
+    try {
+      const attempt = await runSandboxAttempt(command, wrappedCommand, cwd, onData, existingViolationCount, signal, timeout, env);
+      return { attempt, existingViolationCount };
+    } catch (err) {
+      safeCleanupAfterCommand();
+      throw err;
+    }
+  }
+
+  async function processSandboxAttempt(options: {
+    attempt: BashAttemptResult;
+    command: string;
+    cwd: string;
+    existingViolationCount: number;
+    autoRetryAvailable: boolean;
+  }): Promise<ProcessedSandboxAttempt> {
+    const { attempt, command, cwd, existingViolationCount, autoRetryAvailable } = options;
+    const commandSucceeded = attempt.exitCode === 0 && !attempt.interruptedByFilesystemViolation;
+    if (commandSucceeded) {
+      return { exitCode: attempt.exitCode, postamble: "", resolution: null };
+    }
+
+    const annotatedOutput = SandboxManager.annotateStderrWithSandboxFailures(command, attempt.combinedOutput);
+    const runtimeConfig = getRuntimeConfig();
+    const metadataTraversalPaths = getMetadataTraversalPaths({
+      runtimeConfig,
+      output: annotatedOutput,
+      cwd,
+      skipViolationLines: existingViolationCount,
+    });
+    const effectiveExitCode = metadataTraversalPaths ? 0 : attempt.exitCode;
+    let postamble = extractAppendedSandboxAnnotation(attempt.combinedOutput, annotatedOutput, existingViolationCount);
+    let resolution: FilesystemViolationResolution | null = null;
+
+    if (metadataTraversalPaths) {
+      const notice = formatMetadataTraversalNotice(metadataTraversalPaths);
+      postamble = appendOutputPostamble(postamble, notice, attempt.combinedOutput);
+    } else if (runtimeConfig) {
+      resolution = await handleFilesystemViolation({
+        pi,
+        ctx: getContext(),
+        promptMode: getPromptMode(),
+        runtimeConfig,
+        output: annotatedOutput,
+        rawOutput: attempt.combinedOutput,
+        command,
+        cwd,
+        pendingPrompts: pendingFilesystemPrompts,
+        applyRuntimeConfigForSession,
+        existingViolationCount,
+        recordBlock,
+        autoRetryAvailable,
+      });
+
+      if (resolution) {
+        postamble = appendOutputPostamble(postamble, resolution.message, attempt.combinedOutput);
+      }
+    }
+
+    return { exitCode: effectiveExitCode, postamble, resolution };
+  }
+
   return {
     async exec(command, cwd, { onData, signal, timeout, env }) {
       return runSerially(async () => {
@@ -1034,89 +1233,76 @@ function createSandboxedBashOps(options: SandboxedBashOpsOptions): BashOperation
           throw new Error(`Working directory does not exist: ${cwd}`);
         }
 
-        maybeAllowGitMetadataWriteForSession({
-          ctx: getContext(),
+        const startedAt = Date.now();
+        const initialRun = await prepareAndRunSandboxAttempt({ command, cwd, onData, signal, timeout, env });
+
+        let processedAttempt: ProcessedSandboxAttempt;
+        try {
+          processedAttempt = await processSandboxAttempt({
+            attempt: initialRun.attempt,
+            command,
+            cwd,
+            existingViolationCount: initialRun.existingViolationCount,
+            autoRetryAvailable: true,
+          });
+        } catch (postProcessError) {
+          reportPostProcessingError(postProcessError);
+          safeCleanupAfterCommand();
+          return { exitCode: initialRun.attempt.exitCode };
+        }
+
+        const retryResolution = processedAttempt.resolution;
+        if (retryResolution?.kind !== "allow-retry") {
+          if (processedAttempt.postamble) onData(Buffer.from(processedAttempt.postamble));
+          safeCleanupAfterCommand();
+          return { exitCode: processedAttempt.exitCode };
+        }
+
+        if (processedAttempt.postamble) {
+          onData(Buffer.from(ensureTrailingNewline(processedAttempt.postamble)));
+        }
+
+        initialRun.attempt.combinedOutput = "";
+        safeCleanupAfterCommand();
+
+        const retryTimeout = getRemainingTimeout(timeout, startedAt);
+        if (retryTimeout !== undefined && retryTimeout <= 0) {
+          onData(Buffer.from(retryResolution.retrySkippedMessage));
+          return { exitCode: processedAttempt.exitCode };
+        }
+
+        const retryRun = await prepareAndRunSandboxAttempt({
+          command,
           cwd,
-          runtimeConfig: getRuntimeConfig(),
-          applyRuntimeConfigForSession,
+          onData,
+          signal,
+          timeout: retryTimeout,
+          env,
         });
 
-        const wrappedCommand = await SandboxManager.wrapWithSandbox(command);
-        const existingViolationCount = SandboxManager.getSandboxViolationStore().getViolationsForCommand(command).length;
-
-        let attempt: BashAttemptResult;
+        let processedRetry: ProcessedSandboxAttempt;
         try {
-          attempt = await runSandboxAttempt(command, wrappedCommand, cwd, onData, existingViolationCount, signal, timeout, env);
-        } catch (err) {
-          safeCleanupAfterCommand();
-          throw err;
-        }
-
-        try {
-          const annotatedOutput = SandboxManager.annotateStderrWithSandboxFailures(command, attempt.combinedOutput);
-          const runtimeConfig = getRuntimeConfig();
-          const metadataTraversalPaths =
-            attempt.exitCode !== 0 && !attempt.interruptedByFilesystemViolation
-              ? getMetadataTraversalPaths({
-                  runtimeConfig,
-                  output: annotatedOutput,
-                  cwd,
-                  skipViolationLines: existingViolationCount,
-                })
-              : null;
-          const effectiveExitCode = metadataTraversalPaths ? 0 : attempt.exitCode;
-          const commandSucceeded = effectiveExitCode === 0 && !attempt.interruptedByFilesystemViolation;
-          let postamble =
-            commandSucceeded
-              ? ""
-              : extractAppendedSandboxAnnotation(attempt.combinedOutput, annotatedOutput, existingViolationCount);
-
-          if (metadataTraversalPaths) {
-            const notice = formatMetadataTraversalNotice(metadataTraversalPaths);
-            if (notice) {
-              const needsSeparator = attempt.combinedOutput.length > 0 && !attempt.combinedOutput.endsWith("\n");
-              if (needsSeparator) postamble += "\n";
-              postamble += notice;
-            }
-          } else if (!commandSucceeded && runtimeConfig) {
-            const advice = await handleFilesystemViolation({
-              pi,
-              ctx: getContext(),
-              promptMode: getPromptMode(),
-              runtimeConfig,
-              output: annotatedOutput,
-              rawOutput: attempt.combinedOutput,
-              command,
-              cwd,
-              pendingPrompts: pendingFilesystemPrompts,
-              applyRuntimeConfigForSession,
-              existingViolationCount,
-              recordBlock,
-            });
-
-            if (advice) {
-              const needsSeparator =
-                postamble.length > 0
-                  ? !postamble.endsWith("\n")
-                  : attempt.combinedOutput.length > 0 && !attempt.combinedOutput.endsWith("\n");
-
-              if (needsSeparator) postamble += "\n";
-              postamble += advice;
-            }
-          }
-
-          if (postamble) onData(Buffer.from(postamble));
-          return { exitCode: effectiveExitCode };
+          processedRetry = await processSandboxAttempt({
+            attempt: retryRun.attempt,
+            command,
+            cwd,
+            existingViolationCount: retryRun.existingViolationCount,
+            autoRetryAvailable: false,
+          });
         } catch (postProcessError) {
-          const message = `[sandbox] Post-processing error: ${postProcessError instanceof Error ? postProcessError.message : postProcessError}`;
-          const ctx = getContext();
-          if (ctx) notify(ctx, message, "warning");
-          else console.warn(message);
-        } finally {
+          reportPostProcessingError(postProcessError);
           safeCleanupAfterCommand();
+          return { exitCode: retryRun.attempt.exitCode };
         }
 
-        return { exitCode: attempt.exitCode };
+        let retryPostamble = processedRetry.postamble;
+        if (processedRetry.exitCode !== 0 && !processedRetry.resolution) {
+          retryPostamble = appendOutputPostamble(retryPostamble, retryResolution.retryFailureMessage, retryRun.attempt.combinedOutput);
+        }
+
+        if (retryPostamble) onData(Buffer.from(retryPostamble));
+        safeCleanupAfterCommand();
+        return { exitCode: processedRetry.exitCode };
       });
     },
   };
