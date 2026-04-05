@@ -2,8 +2,11 @@
  * Worktree Extension
  *
  * Commands:
- *  - /worktree new <branch> [--from <ref>] [layout=<window|split-right|split-down>]
- *      Creates a new worktree at ../<project>-<branch-normalized>
+ *  - /worktree new <branch> [--from <ref>]
+ *      Creates a new worktree at ../<project>-<branch-normalized> and prints manual open instructions.
+ *
+ *  - /worktree switch <branch> [--from <ref>]
+ *      Switches in-place to an existing worktree, or creates it first when missing.
  *
  *  - /worktree archive <branch>
  *      Removes the worktree for <branch> and deletes the local branch if it's pushed (has upstream).
@@ -16,39 +19,15 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@mariozechner/pi-coding-agent";
-import { DynamicBorder } from "@mariozechner/pi-coding-agent";
+import { DynamicBorder, SessionManager } from "@mariozechner/pi-coding-agent";
 import { Container, type SelectItem, SelectList, Text, matchesKey } from "@mariozechner/pi-tui";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
 const STATUS_KEY = "worktree";
-const TERMINAL_FLAG = "worktree-term";
-const TMUX_LAYOUT_FLAG = "worktree-tmux-layout";
 
 type PromptStatus = "completed" | "error";
-type TmuxLayout = "window" | "split-right" | "split-down";
-
-const TMUX_LAYOUT_CONFIG: Record<
-  TmuxLayout,
-  {
-    label: string;
-    commandArgs: (cwd: string, command: string) => string[];
-  }
-> = {
-  window: {
-    label: "window",
-    commandArgs: (cwd, command) => ["new-window", "-c", cwd, "-n", "pi", command],
-  },
-  "split-right": {
-    label: "split (right)",
-    commandArgs: (cwd, command) => ["split-window", "-h", "-c", cwd, command],
-  },
-  "split-down": {
-    label: "split (down)",
-    commandArgs: (cwd, command) => ["split-window", "-v", "-c", cwd, command],
-  },
-};
 
 async function withPromptSignal<T>(pi: ExtensionAPI, run: () => Promise<T>): Promise<T> {
   pi.events.emit("ui:prompt_start", { source: "worktree" });
@@ -72,7 +51,7 @@ const STATUS_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", 
 // copy, and fail if the destination already exists (skip-on-exist for idempotency).
 const COPYFILE_COW_EXCL = fs.constants.COPYFILE_FICLONE | fs.constants.COPYFILE_EXCL;
 
-type Subcommand = "new" | "archive" | "clean" | "list";
+type Subcommand = "new" | "switch" | "archive" | "clean" | "list";
 
 type DirtyAction = "skip" | "stash" | "force" | "prompt";
 
@@ -109,7 +88,7 @@ interface ArchiveOutcome {
 interface SwitchMainResult {
   proceed: boolean;
   switched: boolean;
-  stashedHash?: string;
+  stashSpec?: string;
 }
 
 interface SetupAction {
@@ -196,41 +175,21 @@ function copyToClipboard(text: string): boolean {
   return false;
 }
 
-function getStringFlag(pi: ExtensionAPI, name: string): string | undefined {
-  const value = pi.getFlag(`--${name}`);
-  if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
+function buildManualOpenCommand(targetPath: string): string {
+  return `cd ${shellQuoteCompact(targetPath)} && pi`;
 }
 
-function parseTmuxLayout(value: string | undefined): TmuxLayout | undefined {
-  if (!value) return undefined;
-  const normalized = value.trim().toLowerCase();
-  if (normalized in TMUX_LAYOUT_CONFIG) {
-    return normalized as TmuxLayout;
+function notifyManualOpenCommand(ctx: ExtensionCommandContext, command: string): void {
+  if (!ctx.hasUI) {
+    console.log(command);
+    return;
   }
-  return undefined;
-}
-
-function notifyManualResume(ctx: ExtensionCommandContext, command: string): void {
-  if (!ctx.hasUI) return;
 
   const copied = copyToClipboard(command);
-  const hint = copied
-    ? "Paste in a new terminal/split (copied to clipboard):"
-    : "Copy and paste in a new terminal/split:";
+  const hint = copied ? "Open command copied to clipboard:" : "Run this command to open the worktree:";
 
   ctx.ui.notify(hint, "info");
   ctx.ui.notify(ctx.ui.theme.fg("text", command), "info");
-}
-
-function renderTerminalCommand(template: string, cwd: string): string {
-  let command = template;
-  command = command.split("{cwd}").join(cwd);
-  if (command.includes("{command}")) {
-    return command.split("{command}").join("pi");
-  }
-  return `${command} pi`;
 }
 
 function realpathOrResolve(p: string): string {
@@ -411,14 +370,6 @@ function branchNameFromRef(ref: string): string {
   return ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : ref;
 }
 
-async function getHeadBranch(pi: ExtensionAPI, cwd: string): Promise<string | null> {
-  const result = await git(pi, cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
-  if (result.code !== 0) return null;
-  const name = result.stdout.trim();
-  if (!name || name === "HEAD") return null;
-  return name;
-}
-
 async function isDirty(pi: ExtensionAPI, cwd: string): Promise<boolean> {
   const result = await git(pi, cwd, ["status", "--porcelain"]);
   if (result.code !== 0) return false;
@@ -431,56 +382,19 @@ async function getDirtyState(pi: ExtensionAPI, cwd: string): Promise<DirtyState>
   return result.stdout.trim().length > 0 ? "dirty" : "clean";
 }
 
-async function stashAll(pi: ExtensionAPI, cwd: string, message: string): Promise<string | undefined> {
+async function stashAll(pi: ExtensionAPI, cwd: string, message: string): Promise<void> {
   const result = await git(pi, cwd, ["stash", "push", "-u", "-m", message]);
   if (result.code !== 0) {
     const details = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join("\n");
     throw new Error(`Failed to stash changes${details ? `\n${details}` : ""}`);
   }
-
-  // Capture the stash commit hash so we can optionally apply it later.
-  const ref = await git(pi, cwd, ["rev-parse", "--verify", "--quiet", "stash@{0}"]);
-  if (ref.code !== 0) return undefined;
-  const hash = ref.stdout.trim();
-  return hash.length > 0 ? hash : undefined;
 }
 
-async function findStashIndexByHash(pi: ExtensionAPI, repoRoot: string, stashHash: string): Promise<number | null> {
-  const result = await git(pi, repoRoot, ["stash", "list", "--format=%H"]);
-  if (result.code !== 0) return null;
-
-  const hashes = result.stdout
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
-
-  const idx = hashes.findIndex((h) => h === stashHash);
-  return idx >= 0 ? idx : null;
-}
-
-async function applyStashToWorktree(
-  pi: ExtensionAPI,
-  repoRoot: string,
-  worktreePath: string,
-  stashHash: string,
-): Promise<void> {
-  const idx = await findStashIndexByHash(pi, repoRoot, stashHash);
-
-  if (idx !== null) {
-    const pop = await git(pi, worktreePath, ["stash", "pop", `stash@{${idx}}`]);
-    if (pop.code !== 0) {
-      const details = [pop.stdout.trim(), pop.stderr.trim()].filter(Boolean).join("\n");
-      throw new Error(`Failed to pop stash into ${worktreePath}${details ? `\n${details}` : ""}`);
-    }
-    return;
-  }
-
-  // Fallback: apply by hash (doesn't drop the stash entry).
-  const apply = await git(pi, worktreePath, ["stash", "apply", stashHash]);
-  if (apply.code !== 0) {
-    const details = [apply.stdout.trim(), apply.stderr.trim()].filter(Boolean).join("\n");
-    throw new Error(`Failed to apply stash into ${worktreePath}${details ? `\n${details}` : ""}`);
-  }
+async function getLatestStashRevision(pi: ExtensionAPI, cwd: string): Promise<string | undefined> {
+  const result = await git(pi, cwd, ["rev-parse", "--verify", "--quiet", "stash@{0}"]);
+  if (result.code !== 0) return undefined;
+  const revision = result.stdout.trim();
+  return revision.length > 0 ? revision : undefined;
 }
 
 async function localBranchExists(pi: ExtensionAPI, repoRoot: string, branch: string): Promise<boolean> {
@@ -1012,316 +926,339 @@ async function ensureCanPrompt(ctx: ExtensionCommandContext, message: string): P
   return false;
 }
 
+async function getHeadBranch(pi: ExtensionAPI, cwd: string): Promise<string | null> {
+  const result = await git(pi, cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  if (result.code !== 0) return null;
+  const name = result.stdout.trim();
+  if (!name || name === "HEAD") return null;
+  return name;
+}
+
+function worktreeForBranch(worktrees: WorktreeInfo[], branch: string): WorktreeInfo | undefined {
+  return worktrees.find((w) => w.branchRef === `refs/heads/${branch}`);
+}
+
+type ParsedWorktreeTargetArgs = {
+  branch: string;
+  fromRef?: string;
+};
+
+async function parseWorktreeTargetArgs(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  args: string,
+  usage: string,
+): Promise<ParsedWorktreeTargetArgs | null> {
+  const tokens = tokenizeArgs(args);
+  let branch = tokens[0];
+  if (!branch || branch.startsWith("-")) {
+    if (!ctx.hasUI) {
+      throw new Error(usage);
+    }
+    const input = await withPromptSignal(pi, () => ctx.ui.input("Branch name"));
+    if (!input) return null;
+    branch = input.trim();
+  }
+
+  branch = stripRefsHeadsPrefix(branch);
+  if (!branch || branch.startsWith("-")) {
+    if (ctx.hasUI) ctx.ui.notify("Invalid branch name", "warning");
+    else throw new Error("Invalid branch name");
+    return null;
+  }
+
+  let fromRef: string | undefined;
+  for (let i = 1; i < tokens.length; i++) {
+    const token = tokens[i]!;
+    if (token === "--from") {
+      const next = tokens[i + 1];
+      if (!next) {
+        if (ctx.hasUI) ctx.ui.notify(usage, "warning");
+        else throw new Error(usage);
+        return null;
+      }
+      fromRef = next;
+      i += 1;
+      continue;
+    }
+    if (token.startsWith("--from=")) {
+      const value = token.slice("--from=".length).trim();
+      if (!value) {
+        if (ctx.hasUI) ctx.ui.notify(usage, "warning");
+        else throw new Error(usage);
+        return null;
+      }
+      fromRef = value;
+      continue;
+    }
+
+    if (ctx.hasUI) ctx.ui.notify(usage, "warning");
+    else throw new Error(usage);
+    return null;
+  }
+
+  return { branch, fromRef };
+}
+
 async function maybeSwitchMainToDefaultBranch(
   pi: ExtensionAPI,
   ctx: ExtensionCommandContext,
   repo: RepoInfo,
   defaultBranch: string,
   reason: string,
-  options?: { required: boolean },
 ): Promise<SwitchMainResult> {
   const current = await getHeadBranch(pi, repo.mainRoot);
-  if (!current || current === defaultBranch) return { proceed: true, switched: false };
-
-  const required = options?.required ?? false;
-
-  if (!ctx.hasUI) {
-    if (required) {
-      throw new Error(
-        `Cannot proceed without UI: need to checkout ${defaultBranch} in main worktree to ${reason}.`,
-      );
-    }
+  if (!current || current === defaultBranch) {
     return { proceed: true, switched: false };
   }
 
-  const title = required ? "Switch main worktree?" : "Switch main worktree branch?";
-  const ok = await withPromptSignal(pi, () =>
-    ctx.ui.confirm(title, `Main worktree is on ${current}. Checkout ${defaultBranch} to ${reason}?`),
-  );
-
-  if (!ok) {
-    return required ? { proceed: false, switched: false } : { proceed: true, switched: false };
+  if (!ctx.hasUI) {
+    throw new Error(`Cannot proceed without UI: need to checkout ${defaultBranch} in main worktree to ${reason}.`);
   }
 
-  let stashedHash: string | undefined;
+  const ok = await withPromptSignal(pi, () =>
+    ctx.ui.confirm("Switch main worktree?", `Main worktree is on ${current}. Checkout ${defaultBranch} to ${reason}?`),
+  );
+  if (!ok) return { proceed: false, switched: false };
 
+  let stashSpec: string | undefined;
   if (await isDirty(pi, repo.mainRoot)) {
     const choice = await withPromptSignal(pi, () =>
       ctx.ui.select("Main worktree has uncommitted changes", ["Stash changes (including untracked) and continue", "Cancel"]),
     );
-
     if (!choice || choice.startsWith("Cancel")) {
-      return required ? { proceed: false, switched: false } : { proceed: true, switched: false };
+      return { proceed: false, switched: false };
     }
 
-    stashedHash = await stashAll(
+    await stashAll(
       pi,
       repo.mainRoot,
       `worktree: stash before switching main worktree to ${defaultBranch}`,
     );
+    stashSpec = (await getLatestStashRevision(pi, repo.mainRoot)) ?? "stash@{0}";
   }
 
   const checkout = await git(pi, repo.mainRoot, ["checkout", defaultBranch]);
   if (checkout.code !== 0) {
     const details = [checkout.stdout.trim(), checkout.stderr.trim()].filter(Boolean).join("\n");
-    throw new Error(
-      `Failed to checkout ${defaultBranch} in main worktree${details ? `\n${details}` : ""}`,
-    );
+    throw new Error(`Failed to checkout ${defaultBranch} in main worktree${details ? `\n${details}` : ""}`);
   }
 
-  return { proceed: true, switched: true, stashedHash };
+  return {
+    proceed: true,
+    switched: true,
+    stashSpec,
+  };
 }
 
-function spawnDetached(command: string, args: string[], onError?: (error: Error) => void): void {
-  const child = spawn(command, args, { detached: true, stdio: "ignore" });
-  child.unref();
-  if (onError) child.on("error", onError);
-}
-
-async function openSessionInDirectory(
+async function createWorktree(
   pi: ExtensionAPI,
   ctx: ExtensionCommandContext,
+  repo: RepoInfo,
+  worktrees: WorktreeInfo[],
+  branch: string,
+  fromRef?: string,
+): Promise<string | null> {
+  const targetPath = await resolveWorktreePath(pi, ctx, repo, worktrees, branch);
+  if (!targetPath) return null;
+
+  const branchExists = await localBranchExists(pi, repo.mainRoot, branch);
+  if (branchExists && fromRef) {
+    if (ctx.hasUI) {
+      const ok = await withPromptSignal(pi, () =>
+        ctx.ui.confirm(
+          "Branch exists",
+          `Branch ${branch} already exists.\n\nContinuing will use the existing branch at its current state; --from (${fromRef}) will have no effect.\n\nContinue?`,
+        ),
+      );
+      if (!ok) return null;
+    } else {
+      console.error(`Branch ${branch} already exists. Ignoring --from ${fromRef}.`);
+    }
+  }
+
+  let addArgs: string[];
+  if (branchExists) {
+    addArgs = ["worktree", "add", targetPath, branch];
+  } else {
+    const baseCommit = (
+      await mustGitStdout(
+        pi,
+        repo.currentRoot,
+        ["rev-parse", fromRef ?? "HEAD"],
+        `Failed to resolve base ref: ${fromRef ?? "HEAD"}`,
+      )
+    ).trim();
+    addArgs = ["worktree", "add", "-b", branch, targetPath, baseCommit];
+  }
+
+  const add = await git(pi, repo.mainRoot, addArgs);
+  if (add.code !== 0) {
+    const details = [add.stdout.trim(), add.stderr.trim()].filter(Boolean).join("\n");
+    throw new Error(`Failed to create worktree${details ? `\n${details}` : ""}`);
+  }
+
+  if (ctx.hasUI) {
+    ctx.ui.notify(`Worktree created: ${targetPath}`, "info");
+  }
+
+  const currentWorktrees = await listWorktrees(pi, repo.mainRoot);
+  await applyWorktreeInclude(pi, ctx, repo.mainRoot, targetPath, currentWorktrees);
+  await runProjectScripts(pi, ctx, targetPath, "setup", inferSetupActions(targetPath));
+
+  return targetPath;
+}
+
+async function switchToWorktree(
+  ctx: ExtensionCommandContext,
   targetPath: string,
-  tmuxLayoutOverride?: TmuxLayout,
+  currentWorktreeRoot?: string,
 ): Promise<void> {
-  if (!ctx.hasUI) return;
-
-  const manualHint = `cd ${shellQuoteCompact(targetPath)} && pi`;
-
-  const terminalFlag = getStringFlag(pi, TERMINAL_FLAG);
-  if (terminalFlag) {
-    const command = renderTerminalCommand(terminalFlag, targetPath);
-    spawnDetached("bash", ["-lc", command], (error) => {
-      if (ctx.hasUI) {
-        ctx.ui.notify(`Terminal command failed: ${error.message}`, "warning");
-        notifyManualResume(ctx, manualHint);
-      }
-    });
-    ctx.ui.notify("Opened new session in custom terminal", "info");
+  const pathState = getWorktreePathState(targetPath);
+  if (pathState !== "ok") {
+    const message = `Cannot switch to worktree at ${targetPath}: ${pathState}`;
+    if (ctx.hasUI) ctx.ui.notify(message, "error");
+    else throw new Error(message);
     return;
   }
 
-  if (process.env.TMUX) {
-    const rawTmuxLayout = getStringFlag(pi, TMUX_LAYOUT_FLAG);
-    const tmuxLayout = tmuxLayoutOverride ?? (rawTmuxLayout ? parseTmuxLayout(rawTmuxLayout) : "window");
+  const currentRoot = currentWorktreeRoot ?? ctx.cwd;
+  if (realpathOrResolve(targetPath) === realpathOrResolve(currentRoot)) {
+    if (ctx.hasUI) ctx.ui.notify("Already in this worktree", "info");
+    return;
+  }
 
-    if (!tmuxLayout) {
-      ctx.ui.notify(
-        `Invalid --${TMUX_LAYOUT_FLAG}: ${rawTmuxLayout}. Using window. Valid values: window, split-right, split-down`,
-        "warning",
-      );
+  const currentSessionFile = ctx.sessionManager.getSessionFile();
+  if (!currentSessionFile) {
+    const manualCommand = buildManualOpenCommand(targetPath);
+    const message = "Current session is ephemeral; cannot switch worktrees in-place.";
+    if (ctx.hasUI) {
+      ctx.ui.notify(message, "warning");
+      notifyManualOpenCommand(ctx, manualCommand);
+    } else {
+      throw new Error(`${message} Open manually: ${manualCommand}`);
+    }
+    return;
+  }
+
+  const sessionDir = ctx.sessionManager.getSessionDir();
+  const nextSession = SessionManager.forkFrom(currentSessionFile, targetPath, sessionDir);
+  const sessionFile = nextSession.getSessionFile();
+  if (!sessionFile) {
+    throw new Error(`Failed to create a session for worktree: ${targetPath}`);
+  }
+
+  const result = await ctx.switchSession(sessionFile);
+  if (result.cancelled) {
+    try {
+      fs.rmSync(sessionFile, { force: true });
+    } catch {
+      // Best effort: avoid leaving behind an unused forked session file.
     }
 
-    const resolvedLayout = tmuxLayout ?? "window";
-    const layoutConfig = TMUX_LAYOUT_CONFIG[resolvedLayout];
-    const result = await pi.exec("tmux", layoutConfig.commandArgs(targetPath, "pi"));
-    if (result.code !== 0) {
-      ctx.ui.notify(`tmux failed: ${result.stderr || result.stdout || "unknown error"}`, "warning");
-      notifyManualResume(ctx, manualHint);
+    if (ctx.hasUI) {
+      ctx.ui.notify("Cancelled", "warning");
       return;
     }
 
-    ctx.ui.notify(`Opened new session in tmux ${layoutConfig.label}`, "info");
-    return;
+    throw new Error("Switch cancelled");
   }
-
-  notifyManualResume(ctx, manualHint);
 }
 
 async function handleNew(pi: ExtensionAPI, ctx: ExtensionCommandContext, args: string): Promise<void> {
-  const tokens = tokenizeArgs(args);
-  let branch = tokens[0];
-  if (!branch || branch.startsWith("-")) {
-    if (!ctx.hasUI) return;
-    const input = await withPromptSignal(pi, () => ctx.ui.input("Branch name"));
-    if (!input) return;
-    branch = input.trim();
-  }
-
-  branch = stripRefsHeadsPrefix(branch);
-  if (!branch || branch.startsWith("-")) {
-    if (ctx.hasUI) {
-      ctx.ui.notify("Invalid branch name", "warning");
-    }
-    return;
-  }
-
-  let fromRef: string | undefined;
-  let tmuxLayoutOverride: TmuxLayout | undefined;
-  for (let i = 1; i < tokens.length; i++) {
-    const t = tokens[i];
-    if (t === "--from") {
-      fromRef = tokens[i + 1];
-      i++;
-      continue;
-    }
-    if (t.startsWith("--from=")) {
-      fromRef = t.slice("--from=".length);
-      continue;
-    }
-    if (t.startsWith("layout=")) {
-      const rawLayout = t.slice("layout=".length);
-      const parsed = parseTmuxLayout(rawLayout);
-      if (!parsed) {
-        if (ctx.hasUI) {
-          ctx.ui.notify("Usage: layout=<window|split-right|split-down>", "warning");
-        }
-        return;
-      }
-      tmuxLayoutOverride = parsed;
-      continue;
-    }
-  }
+  const parsed = await parseWorktreeTargetArgs(pi, ctx, args, "Usage: /worktree new <branch> [--from <ref>]");
+  if (!parsed) return;
 
   await ctx.waitForIdle();
 
-  await withStatus(ctx, `creating worktree: ${branch}`, async () => {
+  const result = await withStatus(ctx, `creating worktree: ${parsed.branch}`, async () => {
     const repo = await getRepoInfo(pi, ctx.cwd);
     const defaultMain = await getDefaultMainBranch(pi, repo.mainRoot);
-
     await pruneWorktrees(pi, repo.mainRoot);
     const worktrees = await listWorktrees(pi, repo.mainRoot);
-    const existing = worktrees.find((w) => w.branchRef === `refs/heads/${branch}`);
-
-    // Branch already checked out in a worktree
+    const existing = worktreeForBranch(worktrees, parsed.branch);
     if (existing && existing.path !== repo.mainRoot) {
+      const alreadyHere = realpathOrResolve(existing.path) === realpathOrResolve(repo.currentRoot);
+      const message = alreadyHere
+        ? `Already in the worktree for branch ${parsed.branch}: ${existing.path}`
+        : `Worktree already exists for branch ${parsed.branch}: ${existing.path}`;
       if (ctx.hasUI) {
-        ctx.ui.notify(`Branch ${branch} is already checked out at: ${existing.path}`, "info");
+        ctx.ui.notify(message, alreadyHere ? "info" : "warning");
+        if (!alreadyHere) {
+          ctx.ui.notify(`Use /worktree switch ${parsed.branch} to move into it.`, "info");
+        }
+        return null;
       }
-      await openSessionInDirectory(pi, ctx, existing.path, tmuxLayoutOverride);
-      return;
+      throw new Error(alreadyHere ? message : `${message}. Use /worktree switch ${parsed.branch}.`);
     }
 
-    if (existing && existing.path === repo.mainRoot && branch === defaultMain) {
-      if (ctx.hasUI) {
-        ctx.ui.notify(
-          `Branch ${branch} is already checked out in the main worktree (${repo.mainRoot}); can't create another worktree for it.`,
-          "warning",
-        );
+    let stashSpec: string | undefined;
+    if (existing?.path === repo.mainRoot) {
+      if (parsed.branch === defaultMain) {
+        const message = `Branch ${parsed.branch} is already checked out in the main worktree (${repo.mainRoot}); can't create another worktree for it.`;
+        if (ctx.hasUI) {
+          ctx.ui.notify(message, "warning");
+          return null;
+        }
+        throw new Error(message);
       }
-      return;
-    }
 
-    const targetPath = await resolveWorktreePath(pi, ctx, repo, worktrees, branch);
-    if (!targetPath) {
-      if (ctx.hasUI) ctx.ui.notify("Cancelled", "warning");
-      return;
-    }
-
-    let stashedHashToApply: string | undefined;
-    let mainWorktreeSwitched = false;
-
-    // If the branch is currently checked out in the main worktree, we must switch main away first.
-    if (existing && existing.path === repo.mainRoot) {
-      const result = await maybeSwitchMainToDefaultBranch(pi, ctx, repo, defaultMain, `free branch ${branch}`, {
-        required: true,
-      });
-
-      if (!result.proceed) {
+      const mainSwitchResult = await maybeSwitchMainToDefaultBranch(pi, ctx, repo, defaultMain, `free branch ${parsed.branch}`);
+      if (!mainSwitchResult.proceed) {
         if (ctx.hasUI) ctx.ui.notify("Cancelled", "warning");
-        return;
+        return null;
       }
-
-      mainWorktreeSwitched = result.switched;
-      stashedHashToApply = result.stashedHash;
-
-      if (result.switched && ctx.hasUI) {
+      stashSpec = mainSwitchResult.stashSpec;
+      if (mainSwitchResult.switched && ctx.hasUI) {
         ctx.ui.notify(
-          `Switched main worktree (${repo.mainRoot}) from ${branch} to ${defaultMain} to free the branch. The new worktree will be on ${branch}.`,
+          `Switched main worktree (${repo.mainRoot}) from ${parsed.branch} to ${defaultMain} to free the branch.`,
           "info",
         );
-      }
-    }
-
-    const exists = await localBranchExists(pi, repo.mainRoot, branch);
-    if (exists && fromRef) {
-      if (ctx.hasUI) {
-        const ok = await withPromptSignal(pi, () =>
-          ctx.ui.confirm(
-            "Branch exists",
-            `Branch ${branch} already exists.
-
-Continuing will use the existing branch at its current state; --from (${fromRef}) will have no effect.
-
-Continue?`,
-          ),
-        );
-        if (!ok) {
-          ctx.ui.notify("Cancelled", "warning");
-          return;
+        if (stashSpec) {
+          ctx.ui.notify(`Changes in the main worktree were stashed before switching to ${defaultMain}.`, "warning");
         }
-      } else {
-        console.error(`Branch ${branch} already exists. Ignoring --from ${fromRef}.`);
       }
     }
 
-    let addArgs: string[];
-    if (exists) {
-      addArgs = ["worktree", "add", targetPath, branch];
-    } else {
-      const baseCommit = (
-        await mustGitStdout(
-          pi,
-          repo.currentRoot,
-          ["rev-parse", fromRef ?? "HEAD"],
-          `Failed to resolve base ref: ${fromRef ?? "HEAD"}`,
-        )
-      ).trim();
-      addArgs = ["worktree", "add", "-b", branch, targetPath, baseCommit];
-    }
-
-    const add = await git(pi, repo.mainRoot, addArgs);
-    if (add.code !== 0) {
-      const details = [add.stdout.trim(), add.stderr.trim()].filter(Boolean).join("\n");
-      throw new Error(`Failed to create worktree${details ? `\n${details}` : ""}`);
-    }
-
-    if (ctx.hasUI) {
-      ctx.ui.notify(`Worktree created: ${targetPath}`, "info");
-    }
-
-    if (mainWorktreeSwitched && ctx.hasUI) {
-      ctx.ui.notify(
-        `Main worktree is now on ${defaultMain}. Worktree ${targetPath} is on ${branch}.`,
-        "info",
-      );
-    }
-
-    if (stashedHashToApply && ctx.hasUI) {
-      const apply = await withPromptSignal(pi, () =>
-        ctx.ui.confirm(
-          "Apply stashed changes?",
-          "I stashed changes in the main worktree to switch branches. Applying may cause conflicts. Apply them to the new worktree?",
-        ),
-      );
-
-      if (apply) {
-        try {
-          await applyStashToWorktree(pi, repo.mainRoot, targetPath, stashedHashToApply);
-          ctx.ui.notify("Applied stashed changes to the new worktree", "info");
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          const firstLine = message.split("\n")[0] || message;
-          ctx.ui.notify(`Failed to apply stash: ${firstLine}`, "error");
-          ctx.ui.notify(
-            `The stash was kept. You can re-apply it manually in ${targetPath}: git stash apply ${stashedHashToApply}`,
-            "warning",
-          );
-        }
-      } else {
-        ctx.ui.notify("Changes remain stashed (git stash list)", "warning");
-      }
-    }
-
-    // Copy cached build artifacts from the main worktree (the long-lived worktree
-    // most likely to have warm caches). This matches worktrunk's default behavior
-    // of always copying from the primary worktree.
-    const currentWorktrees = await listWorktrees(pi, repo.mainRoot);
-    await applyWorktreeInclude(pi, ctx, repo.mainRoot, targetPath, currentWorktrees);
-    await runProjectScripts(pi, ctx, targetPath, "setup", inferSetupActions(targetPath));
-
-    await openSessionInDirectory(pi, ctx, targetPath, tmuxLayoutOverride);
+    const targetPath = await createWorktree(pi, ctx, repo, worktrees, parsed.branch, parsed.fromRef);
+    if (!targetPath) return null;
+    return { targetPath, stashSpec } satisfies { targetPath: string; stashSpec?: string };
   });
+
+  if (!result) return;
+
+  if (result.stashSpec) {
+    const restoreCommand = `cd ${shellQuoteCompact(result.targetPath)} && git stash apply ${shellQuote(result.stashSpec)}`;
+    if (ctx.hasUI) {
+      ctx.ui.notify(`Main-worktree changes were stashed as ${result.stashSpec}.`, "warning");
+      ctx.ui.notify(`To restore them in the new worktree, run: ${restoreCommand}`, "info");
+    } else {
+      console.log(`Main-worktree changes were stashed as ${result.stashSpec}.`);
+      console.log(`Restore them in the new worktree with: ${restoreCommand}`);
+    }
+  }
+
+  notifyManualOpenCommand(ctx, buildManualOpenCommand(result.targetPath));
+}
+
+async function handleSwitch(pi: ExtensionAPI, ctx: ExtensionCommandContext, args: string): Promise<void> {
+  const parsed = await parseWorktreeTargetArgs(pi, ctx, args, "Usage: /worktree switch <branch> [--from <ref>]");
+  if (!parsed) return;
+
+  await ctx.waitForIdle();
+
+  const result = await withStatus(ctx, `preparing worktree: ${parsed.branch}`, async () => {
+    const repo = await getRepoInfo(pi, ctx.cwd);
+    await pruneWorktrees(pi, repo.mainRoot);
+    const worktrees = await listWorktrees(pi, repo.mainRoot);
+    const existing = worktreeForBranch(worktrees, parsed.branch);
+    const targetPath = existing?.path ?? await createWorktree(pi, ctx, repo, worktrees, parsed.branch, parsed.fromRef);
+    if (!targetPath) return null;
+    return { targetPath, currentRoot: repo.currentRoot } satisfies { targetPath: string; currentRoot: string };
+  });
+
+  if (!result) return;
+  await switchToWorktree(ctx, result.targetPath, result.currentRoot);
 }
 
 async function archiveWorktree(
@@ -1335,7 +1272,7 @@ async function archiveWorktree(
 ): Promise<ArchiveOutcome> {
   const wt =
     worktree ??
-    (await listWorktrees(pi, repo.mainRoot)).find((w) => w.branchRef === `refs/heads/${branch}`);
+    worktreeForBranch(await listWorktrees(pi, repo.mainRoot), branch);
   if (!wt) {
     return { branch, worktreePath: "", removed: false, branchDeleted: false, skippedReason: "no-worktree" };
   }
@@ -1815,7 +1752,7 @@ async function handleList(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promi
 
   const itemByValue = new Map(items.map((item) => [item.branch, item]));
 
-  type ListResult = { action: "open" | "archive"; item: WorktreeDisplayItem } | null;
+  type ListResult = { action: "switch" | "archive"; item: WorktreeDisplayItem } | null;
 
   const result = await withPromptSignal(pi, () =>
     ctx.ui.custom<ListResult>((tui, theme, _kb, done) => {
@@ -1831,14 +1768,14 @@ async function handleList(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promi
       });
       selectList.onSelect = (si) => {
         const item = itemByValue.get(si.value);
-        if (item) done({ action: "open", item });
+        if (item) done({ action: "switch", item });
         else done(null);
       };
       selectList.onCancel = () => done(null);
       container.addChild(selectList);
 
       container.addChild(new Text(
-        theme.fg("dim", " ↑↓ navigate  enter open  a archive  esc close"),
+        theme.fg("dim", " ↑↓ navigate  enter switch  a archive  esc close"),
         0, 0,
       ));
       container.addChild(new DynamicBorder((s: string) => theme.fg("borderMuted", s)));
@@ -1866,13 +1803,8 @@ async function handleList(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promi
 
   if (!result) return;
 
-  if (result.action === "open") {
-    const currentReal = realpathOrResolve(repo.currentRoot);
-    if (realpathOrResolve(result.item.wt.path) === currentReal) {
-      ctx.ui.notify("Already in this worktree", "info");
-      return;
-    }
-    await openSessionInDirectory(pi, ctx, result.item.wt.path);
+  if (result.action === "switch") {
+    await switchToWorktree(ctx, result.item.wt.path, repo.currentRoot);
     return;
   }
 
@@ -1887,33 +1819,22 @@ async function handleList(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promi
 function parseSubcommand(args: string): { subcommand: Subcommand | null; rest: string } {
   const tokens = tokenizeArgs(args);
   const sub = tokens[0] as Subcommand | undefined;
-  if (sub === "new" || sub === "archive" || sub === "clean" || sub === "list") {
+  if (sub === "new" || sub === "switch" || sub === "archive" || sub === "clean" || sub === "list") {
     return { subcommand: sub, rest: tokens.slice(1).join(" ") };
   }
   return { subcommand: null, rest: args };
 }
 
 export default function worktreeExtension(pi: ExtensionAPI) {
-  pi.registerFlag(TERMINAL_FLAG, {
-    description:
-      "Command to open a new terminal. Use {cwd} for working directory and optional {command} for the pi command.",
-    type: "string",
-  });
-
-  pi.registerFlag(TMUX_LAYOUT_FLAG, {
-    description:
-      "When inside tmux, choose where worktree sessions open: window (default), split-right, or split-down.",
-    type: "string",
-  });
-
   pi.registerCommand("worktree", {
-    description: "Create and manage git worktrees",
+    description: "Create, switch, and manage git worktrees",
     getArgumentCompletions: (argumentPrefix) => {
       const prefix = argumentPrefix ?? "";
       const tokens = tokenizeArgs(prefix);
       if (tokens.length === 0) {
         return [
           { value: "new ", label: "new" },
+          { value: "switch ", label: "switch" },
           { value: "archive ", label: "archive" },
           { value: "clean", label: "clean" },
           { value: "list", label: "list" },
@@ -1921,11 +1842,11 @@ export default function worktreeExtension(pi: ExtensionAPI) {
       }
 
       if (tokens.length === 1 && !prefix.endsWith(" ")) {
-        const subcommands = ["new", "archive", "clean", "list"];
+        const subcommands = ["new", "switch", "archive", "clean", "list"];
         return subcommands
           .filter((s) => s.startsWith(tokens[0]))
           .map((s) => ({
-            value: s + (s === "new" || s === "archive" ? " " : ""),
+            value: s + (s === "new" || s === "switch" || s === "archive" ? " " : ""),
             label: s,
           }));
       }
@@ -1938,7 +1859,7 @@ export default function worktreeExtension(pi: ExtensionAPI) {
       if (!subcommand) {
         if (ctx.hasUI) {
           ctx.ui.notify(
-            "Usage: /worktree new <branch> [--from <ref>] [layout=<window|split-right|split-down>] | /worktree archive <branch> | /worktree clean | /worktree list",
+            "Usage: /worktree new <branch> [--from <ref>] | /worktree switch <branch> [--from <ref>] | /worktree archive <branch> | /worktree clean | /worktree list",
             "info",
           );
         }
@@ -1948,6 +1869,11 @@ export default function worktreeExtension(pi: ExtensionAPI) {
       try {
         if (subcommand === "new") {
           await handleNew(pi, ctx, rest);
+          return;
+        }
+
+        if (subcommand === "switch") {
+          await handleSwitch(pi, ctx, rest);
           return;
         }
 
