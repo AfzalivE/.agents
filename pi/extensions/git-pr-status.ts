@@ -4,7 +4,7 @@ import {
   type ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 
-const STATUS_KEY = "0-git-pr-status";
+const STATUS_KEY = "1-git-pr-status";
 
 const REFRESH_DEBOUNCE_MS = 250;
 const PR_LOOKUP_TIMEOUT_MS = 5_000;

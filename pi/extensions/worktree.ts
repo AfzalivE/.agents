@@ -25,7 +25,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const STATUS_KEY = "worktree";
+const STATUS_KEY = "0-worktree";
 
 type PromptStatus = "completed" | "error";
 
@@ -205,15 +205,6 @@ function isSameOrInsidePath(childPath: string, parentPath: string): boolean {
   return rel === "" || (!rel.startsWith(".." + path.sep) && rel !== ".." && !path.isAbsolute(rel));
 }
 
-async function withStatus<T>(ctx: ExtensionCommandContext, text: string, fn: () => Promise<T>): Promise<T> {
-  if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, text);
-  try {
-    return await fn();
-  } finally {
-    if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
-  }
-}
-
 function describePhaseScript(phase: "setup" | "archive", label: string): string {
   const suffix = ` ${phase}`;
   if (label.toLowerCase().endsWith(suffix)) {
@@ -233,12 +224,21 @@ function formatFinishedScriptNotificationText(phase: "setup" | "archive", label:
   return `Finished ${describePhaseScript(phase, label)}`;
 }
 
-async function withSpinnerStatus<T>(ctx: ExtensionCommandContext, text: string, fn: () => Promise<T>): Promise<T> {
-  if (!ctx.hasUI) return fn();
+async function withSpinnerStatus<T>(
+  ctx: ExtensionCommandContext,
+  initialText: string,
+  fn: (setStatusText: (text: string) => void) => Promise<T>,
+): Promise<T> {
+  if (!ctx.hasUI) return fn(() => {});
 
   let frame = 0;
+  let text = initialText;
   const render = () => {
     ctx.ui.setStatus(STATUS_KEY, `${STATUS_SPINNER_FRAMES[frame]} ${text}`);
+  };
+  const setStatusText = (nextText: string) => {
+    text = nextText;
+    render();
   };
 
   render();
@@ -248,7 +248,7 @@ async function withSpinnerStatus<T>(ctx: ExtensionCommandContext, text: string, 
   }, STATUS_SPINNER_INTERVAL_MS);
 
   try {
-    return await fn();
+    return await fn(setStatusText);
   } finally {
     clearInterval(timer);
     ctx.ui.setStatus(STATUS_KEY, undefined);
@@ -817,7 +817,7 @@ async function applyWorktreeInclude(
   );
   if (!ok) return;
 
-  await withStatus(ctx, "copying cached files", async () => {
+  await withSpinnerStatus(ctx, "copying cached files", async () => {
     for (const entry of entriesToCopy) {
       const src = path.join(sourceRoot, entry.replace(/\/$/, ""));
       const dest = path.join(destRoot, entry.replace(/\/$/, ""));
@@ -1171,7 +1171,7 @@ async function handleNew(pi: ExtensionAPI, ctx: ExtensionCommandContext, args: s
 
   await ctx.waitForIdle();
 
-  const result = await withStatus(ctx, `creating worktree: ${parsed.branch}`, async () => {
+  const result = await withSpinnerStatus(ctx, `creating worktree: ${parsed.branch}`, async () => {
     const repo = await getRepoInfo(pi, ctx.cwd);
     const defaultMain = await getDefaultMainBranch(pi, repo.mainRoot);
     await pruneWorktrees(pi, repo.mainRoot);
@@ -1247,7 +1247,7 @@ async function handleSwitch(pi: ExtensionAPI, ctx: ExtensionCommandContext, args
 
   await ctx.waitForIdle();
 
-  const result = await withStatus(ctx, `preparing worktree: ${parsed.branch}`, async () => {
+  const result = await withSpinnerStatus(ctx, `preparing worktree: ${parsed.branch}`, async () => {
     const repo = await getRepoInfo(pi, ctx.cwd);
     await pruneWorktrees(pi, repo.mainRoot);
     const worktrees = await listWorktrees(pi, repo.mainRoot);
@@ -1526,16 +1526,16 @@ async function handleClean(pi: ExtensionAPI, ctx: ExtensionCommandContext): Prom
 
   await ctx.waitForIdle();
 
-  await withStatus(ctx, "cleaning pushed worktrees", async () => {
+  await withSpinnerStatus(ctx, "cleaning pushed worktrees", async (setStatusText) => {
     const repo = await getRepoInfo(pi, ctx.cwd);
     const defaultMain = await getDefaultMainBranch(pi, repo.mainRoot);
 
     // Ensure upstream info is up to date before deciding what's "pushed".
     const remotes = await git(pi, repo.mainRoot, ["remote"]);
     if (remotes.code === 0 && remotes.stdout.trim().length > 0) {
-      if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, "fetching remotes...");
+      setStatusText("fetching remotes...");
       const fetch = await git(pi, repo.mainRoot, ["fetch", "--all", "--prune"], { timeout: FETCH_TIMEOUT_MS });
-      if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, "cleaning pushed worktrees");
+      setStatusText("cleaning pushed worktrees");
 
       if (fetch.killed || fetch.code !== 0) {
         const details = [fetch.stdout.trim(), fetch.stderr.trim()].filter(Boolean).join("\n");
@@ -1722,7 +1722,7 @@ function formatWorktreeLabel(item: WorktreeDisplayItem, theme: Theme): string {
 async function handleList(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
   await ctx.waitForIdle();
 
-  const { repo, items } = await withStatus(ctx, "listing worktrees", async () => {
+  const { repo, items } = await withSpinnerStatus(ctx, "listing worktrees", async () => {
     const repo = await getRepoInfo(pi, ctx.cwd);
     const worktrees = await listWorktrees(pi, repo.mainRoot);
     const items = await gatherWorktreeDisplayItems(pi, repo, worktrees);

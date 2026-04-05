@@ -38,7 +38,7 @@ const COMPLETED_LOOKBACK_DAYS = 89;
 const LOCAL_TASK_PREFIX = "local:";
 const TODOIST_TASK_PREFIX = "todoist:";
 
-const STATUS_KEY = "todo";
+const STATUS_KEY = "0-todo";
 const STATUS_SPINNER_INTERVAL_MS = 80;
 const STATUS_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 

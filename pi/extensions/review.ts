@@ -60,7 +60,7 @@ const REVIEW_EVENT_START = "review:start";
 const REVIEW_EVENT_END = "review:end";
 const REVIEW_MODE_HINTS = ["help", "auto", "uncommitted", "branch", "commit", "pr", "folder", "custom"] as const;
 
-const STATUS_KEY = "review";
+const STATUS_KEY = "0-review";
 const STATUS_SPINNER_INTERVAL_MS = 80;
 const STATUS_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 

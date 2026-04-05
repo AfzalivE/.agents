@@ -23,7 +23,7 @@ import {
   wrapTextWithAnsi,
 } from "@mariozechner/pi-tui";
 
-const STATUS_KEY = "btw";
+const STATUS_KEY = "0-btw";
 const RESULT_MARKDOWN_THEME = getMarkdownTheme();
 const STATUS_SPINNER_INTERVAL_MS = 80;
 const STATUS_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
