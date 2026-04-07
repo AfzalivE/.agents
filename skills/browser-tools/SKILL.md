@@ -19,20 +19,20 @@ npm install
 ## Start Chromium / Chrome
 
 ```bash
-"$HOME/.agents/skills/browser-tools/browser-start.js"              # Fresh profile
-"$HOME/.agents/skills/browser-tools/browser-start.js" --profile    # Copy your profile (cookies, logins)
+"$HOME/.agents/skills/browser-tools/browser-start.js"              # Dedicated tool profile
+"$HOME/.agents/skills/browser-tools/browser-start.js" --profile    # Seed from your browser profile (cookies, logins)
 "$HOME/.agents/skills/browser-tools/browser-start.js" --watch      # Start background JSONL logging
 "$HOME/.agents/skills/browser-tools/browser-start.js" --browser chromium
 "$HOME/.agents/skills/browser-tools/browser-start.js" --browser chrome
 ```
 
-Launch a browser with remote debugging on `:9222`. Use `--profile` to preserve your authentication state.
+Launch a browser with remote debugging on `:9222`. Use `--profile` to preserve your authentication state. If a browser is already running on `:9222`, it is reused; launch options like `--browser`, `--executable`, and `--profile` only affect new browser instances.
 
 If the auto-detection picks the wrong browser, set:
 
 - `BROWSER_TOOLS_BROWSER=chromium` (or `chrome`)
 - `BROWSER_TOOLS_EXECUTABLE=/absolute/path/to/browser`
-- `BROWSER_TOOLS_PROFILE_SRC=/absolute/path/to/profile/dir` (optional)
+- `BROWSER_TOOLS_PROFILE_SRC=/absolute/path/to/profile/dir` (optional; useful with `--executable --profile`)
 
 ## Navigate
 
@@ -48,15 +48,12 @@ Navigate to URLs. Use `--new` flag to open in a new tab instead of reusing curre
 ```bash
 "$HOME/.agents/skills/browser-tools/browser-eval.js" 'document.title'
 "$HOME/.agents/skills/browser-tools/browser-eval.js" 'document.querySelectorAll("a").length'
+"$HOME/.agents/skills/browser-tools/browser-eval.js" 'const el = document.querySelector("textarea"); return el?.value'
+"$HOME/.agents/skills/browser-tools/browser-eval.js" --file ./snippet.js
+printf 'return document.title\n' | "$HOME/.agents/skills/browser-tools/browser-eval.js" --stdin
 ```
 
-Execute JavaScript in the active tab. Code runs in async context. Use this to extract data, inspect page state, or perform DOM operations programmatically.
-
-For multi-line code or statements, wrap in an IIFE:
-
-```bash
-"$HOME/.agents/skills/browser-tools/browser-eval.js" '(() => { const x = 1; return x + 1; })()'
-```
+Execute JavaScript in the active tab. Code runs in async context. Expressions and statement bodies are both supported. Use `return` when passing statements or multi-line code.
 
 ## Screenshot
 

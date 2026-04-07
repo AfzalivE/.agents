@@ -79,6 +79,25 @@ const startWatcher = () => {
   spawn(process.execPath, [watcherPath], { detached: true, stdio: "ignore" }).unref();
 };
 
+const connectToRunningBrowser = async () => {
+  try {
+    return await puppeteer.connect({
+      browserURL: "http://127.0.0.1:9222",
+      defaultViewport: null,
+    });
+  } catch {
+    return null;
+  }
+};
+
+const runningBrowser = await connectToRunningBrowser();
+if (runningBrowser) {
+  await runningBrowser.disconnect();
+  if (startWatch) startWatcher();
+  console.log(`✓ Browser already running on :9222${startWatch ? " (watch enabled)" : ""}`);
+  process.exit(0);
+}
+
 const findExecutable = (candidates) => {
   for (const candidate of candidates) {
     if (!candidate) continue;
@@ -98,77 +117,105 @@ const findExecutable = (candidates) => {
   return null;
 };
 
-const getBrowserConfig = () => {
+const getDefaultProfileSrc = (kind) =>
+  kind === "chrome"
+    ? process.platform === "darwin"
+      ? `${process.env.HOME}/Library/Application Support/Google/Chrome/`
+      : `${process.env.HOME}/.config/google-chrome/`
+    : process.platform === "darwin"
+      ? `${process.env.HOME}/Library/Application Support/Chromium/`
+      : `${process.env.HOME}/.config/chromium/`;
+
+const buildBrowserConfig = ({ label, candidates, profileSrc }) => ({
+  label,
+  candidates,
+  executable: findExecutable(candidates),
+  profileSrc,
+});
+
+const getBrowserSelection = () => {
   if (executableOverride) {
-    const defaultProfileSrc =
+    const label =
       browserChoice === "chrome"
-        ? process.platform === "darwin"
-          ? `${process.env.HOME}/Library/Application Support/Google/Chrome/`
-          : `${process.env.HOME}/.config/google-chrome/`
-        : process.platform === "darwin"
-          ? `${process.env.HOME}/Library/Application Support/Chromium/`
-          : `${process.env.HOME}/.config/chromium/`;
+        ? "Chrome"
+        : browserChoice === "chromium"
+          ? "Chromium"
+          : "Browser";
 
     return {
-      label: browserChoice === "chrome" ? "Chrome" : "Chromium",
-      executable: executableOverride,
-      profileSrc: profileSrcOverride || defaultProfileSrc,
+      selected: buildBrowserConfig({
+        label,
+        candidates: [executableOverride],
+        profileSrc:
+          profileSrcOverride ||
+          (browserChoice === "auto" ? null : getDefaultProfileSrc(browserChoice)),
+      }),
     };
   }
 
-  const chromium = {
+  const chromium = buildBrowserConfig({
     label: "Chromium",
-    executable: findExecutable(
+    candidates:
       process.platform === "darwin"
-        ? ["/Applications/Chromium.app/Contents/MacOS/Chromium"]
+        ? [
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            `${process.env.HOME}/Applications/Chromium.app/Contents/MacOS/Chromium`,
+          ]
         : ["chromium", "chromium-browser"],
-    ),
-    profileSrc:
-      profileSrcOverride ||
-      (process.platform === "darwin"
-        ? `${process.env.HOME}/Library/Application Support/Chromium/`
-        : `${process.env.HOME}/.config/chromium/`),
-  };
+    profileSrc: profileSrcOverride || getDefaultProfileSrc("chromium"),
+  });
 
-  const chrome = {
+  const chrome = buildBrowserConfig({
     label: "Chrome",
-    executable: findExecutable(
+    candidates:
       process.platform === "darwin"
-        ? ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"]
+        ? [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            `${process.env.HOME}/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`,
+          ]
         : ["google-chrome", "google-chrome-stable", "chrome"],
-    ),
-    profileSrc:
-      profileSrcOverride ||
-      (process.platform === "darwin"
-        ? `${process.env.HOME}/Library/Application Support/Google/Chrome/`
-        : `${process.env.HOME}/.config/google-chrome/`),
+    profileSrc: profileSrcOverride || getDefaultProfileSrc("chrome"),
+  });
+
+  return {
+    selected:
+      browserChoice === "chromium"
+        ? chromium
+        : browserChoice === "chrome"
+          ? chrome
+          : chromium.executable
+            ? chromium
+            : chrome,
+    all: { chromium, chrome },
   };
-
-  if (browserChoice === "chromium") return chromium;
-  if (browserChoice === "chrome") return chrome;
-
-  return chromium.executable ? chromium : chrome;
 };
 
-const browserConfig = getBrowserConfig();
+const printMissingBrowserError = ({ selected, all }) => {
+  if (executableOverride) {
+    console.error(`✗ ${selected.label} executable not found: ${executableOverride}`);
+    console.error("  Pass a valid path or command via --executable or BROWSER_TOOLS_EXECUTABLE.");
+    return;
+  }
+
+  if (browserChoice === "auto" && all) {
+    console.error("✗ No Chromium or Chrome executable found.");
+    console.error(`  Chromium checked: ${all.chromium.candidates.join(", ")}`);
+    console.error(`  Chrome checked: ${all.chrome.candidates.join(", ")}`);
+    console.error("  Install one of them or pass --executable <path>.");
+    return;
+  }
+
+  console.error(`✗ ${selected.label} executable not found.`);
+  console.error(`  Checked: ${selected.candidates.join(", ")}`);
+  console.error("  Install it, use --browser auto, or pass --executable <path>.");
+};
+
+const browserSelection = getBrowserSelection();
+const browserConfig = browserSelection.selected;
 if (!browserConfig.executable) {
-  console.error("✗ No Chromium/Chrome executable found.");
-  usage();
+  printMissingBrowserError(browserSelection);
   process.exit(1);
 }
-
-// Check if already running on :9222
-try {
-  const browser = await puppeteer.connect({
-    browserURL: "http://127.0.0.1:9222",
-    defaultViewport: null,
-  });
-  await browser.disconnect();
-
-  if (startWatch) startWatcher();
-  console.log(`✓ Browser already running on :9222${startWatch ? " (watch enabled)" : ""}`);
-  process.exit(0);
-} catch {}
 
 // Setup profile directory
 execSync(`mkdir -p "${SCRAPING_DIR}"`, { stdio: "ignore" });
@@ -182,9 +229,16 @@ try {
 } catch {}
 
 if (useProfile) {
+  if (!browserConfig.profileSrc) {
+    console.error("✗ Cannot infer a profile directory for --executable in auto mode.");
+    console.error("  Also pass --browser <chromium|chrome> or set BROWSER_TOOLS_PROFILE_SRC.");
+    process.exit(1);
+  }
+
   console.log("Syncing profile...");
-  execSync(
-    `rsync -a --delete \
+  try {
+    execSync(
+      `rsync -a --delete \
 			--exclude='SingletonLock' \
 			--exclude='SingletonSocket' \
 			--exclude='SingletonCookie' \
@@ -194,8 +248,12 @@ if (useProfile) {
 			--exclude='*/Last Session' \
 			--exclude='*/Last Tabs' \
 			"${browserConfig.profileSrc}" "${SCRAPING_DIR}/"`,
-    { stdio: "pipe" },
-  );
+      { stdio: "pipe" },
+    );
+  } catch {
+    console.error(`✗ Failed to sync profile from: ${browserConfig.profileSrc}`);
+    process.exit(1);
+  }
 }
 
 // Start browser with flags to force new instance
@@ -210,7 +268,7 @@ spawn(
   { detached: true, stdio: "ignore" },
 ).unref();
 
-// Wait for Chrome to be ready
+// Wait for the browser to be ready
 let connected = false;
 for (let i = 0; i < 30; i++) {
   try {

@@ -23,19 +23,28 @@ export async function connectBrowser(timeout = 5000) {
 }
 
 /**
- * Get active page, preferring http/https pages. Exit if none found.
+ * Get the active/focused page. Fall back to the last http/https page, then the last page.
+ * Exit if none found.
  * @param {Browser} browser
  * @returns {Promise<Page>}
  */
 export async function getActivePage(browser) {
   const pages = await browser.pages();
-  const page =
-    pages.filter((pg) => pg.url().startsWith("http")).at(-1) || pages.at(-1);
-  if (!page) {
+  if (pages.length === 0) {
     console.error("✗ No active tab found");
     process.exit(1);
   }
-  return page;
+
+  for (const page of [...pages].reverse()) {
+    try {
+      const isActive = await page.evaluate(
+        () => document.visibilityState === "visible" && document.hasFocus(),
+      );
+      if (isActive) return page;
+    } catch {}
+  }
+
+  return pages.filter((page) => page.url().startsWith("http")).at(-1) || pages.at(-1);
 }
 
 /**

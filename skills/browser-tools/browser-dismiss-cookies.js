@@ -8,6 +8,8 @@
  *   browser-dismiss-cookies.js --reject # reject cookies (where possible)
  */
 
+import { setTimeout as sleep } from "node:timers/promises";
+
 import { connectBrowser, getActivePage } from "./utils.js";
 
 const reject = process.argv.includes("--reject");
@@ -405,7 +407,7 @@ const browser = await connectBrowser();
 const page = await getActivePage(browser);
 
 // Give dialogs a moment to appear after navigation.
-await page.waitForTimeout(500);
+await sleep(500);
 
 log("trying main page...");
 let result = await page.evaluate(COOKIE_DISMISS_FN, acceptCookies);
