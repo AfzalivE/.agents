@@ -41,7 +41,7 @@ export async function runOpenAICodexSearch(options: {
   const response = await fetch(resolveCodexUrl(options.baseUrl), {
     method: "POST",
     headers: {
-      ...(options.headers ?? {}),
+      ...options.headers,
       authorization: `Bearer ${options.apiKey}`,
       ...(options.accountId ? { "chatgpt-account-id": options.accountId } : {}),
       "content-type": "application/json",

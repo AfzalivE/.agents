@@ -254,7 +254,10 @@ function decryptCookieValue(
       Buffer.concat([decipher.update(buffer.subarray(3)), decipher.final()]),
     );
     const normalized = stripHostKeyDigest(decrypted, hostKey);
-    return normalized.toString("utf8").replace(/^\x00+/, "");
+    const text = normalized.toString("utf8");
+    let start = 0;
+    while (text.charCodeAt(start) === 0) start += 1;
+    return text.slice(start);
   } catch {
     return null;
   }

@@ -4,8 +4,10 @@
   "type": "module",
   "scripts": {
     "check": "tsc -p tsconfig.json --noEmit",
-    "format": "git ls-files -z --cached --others --exclude-standard -- ':(glob)**/*.ts' | xargs -0 oxfmt --write",
-    "format:check": "git ls-files -z --cached --others --exclude-standard -- ':(glob)**/*.ts' | xargs -0 oxfmt --check"
+    "format": "git ls-files -z --cached --others --exclude-standard -- ':(glob)**/*.ts' | xargs -0 oxfmt --check",
+    "format:fix": "git ls-files -z --cached --others --exclude-standard -- ':(glob)**/*.ts' | xargs -0 oxfmt --write",
+    "lint": "git ls-files -z --cached --others --exclude-standard -- ':(glob)**/*.ts' | xargs -0 oxlint",
+    "lint:fix": "git ls-files -z --cached --others --exclude-standard -- ':(glob)**/*.ts' | xargs -0 oxlint --fix"
   },
   "devDependencies": {
     "@mariozechner/pi-ai": "0.65.0",
@@ -14,6 +16,7 @@
     "@sinclair/typebox": "0.34.49",
     "@types/node": "24.12.0",
     "oxfmt": "^0.44.0",
+    "oxlint": "^1.59.0",
     "typescript": "5.9.3"
   }
 }

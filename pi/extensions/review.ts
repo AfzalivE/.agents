@@ -803,7 +803,7 @@ function parseKeyValueOption(
   token: string,
   key: "models" | "model" | "context",
 ): string | undefined {
-  const pattern = new RegExp(`^${key}=(?:\"([\\s\\S]*)\"|'([\\s\\S]*)'|(\\S+))$`);
+  const pattern = new RegExp(`^${key}=(?:"([\\s\\S]*)"|'([\\s\\S]*)'|(\\S+))$`);
   const match = token.match(pattern);
   if (!match) return undefined;
   const value = (match[1] ?? match[2] ?? match[3] ?? "").trim();

@@ -10,7 +10,6 @@ import {
   parseSessionEntries,
   type ExtensionAPI,
   type ExtensionCommandContext,
-  type FileEntry,
   type SessionEntry,
   type SessionHeader,
   type Theme,

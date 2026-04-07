@@ -244,12 +244,12 @@ export default function gitDiffStatsExtension(pi: ExtensionAPI) {
     try {
       await promise;
     } finally {
-      if (refreshInFlight !== promise) return;
-
-      refreshInFlight = null;
-      if (refreshQueued) {
-        refreshQueued = false;
-        scheduleRefresh(0);
+      if (refreshInFlight === promise) {
+        refreshInFlight = null;
+        if (refreshQueued) {
+          refreshQueued = false;
+          scheduleRefresh(0);
+        }
       }
     }
   }

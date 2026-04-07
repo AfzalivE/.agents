@@ -641,7 +641,9 @@ async function todoistRequest<T>(
         ...(options.body ? { "Content-Type": "application/json" } : {}),
         ...(options.requestId ? { "X-Request-Id": options.requestId } : {}),
       },
-      body: options.body ? JSON.stringify(options.body) : undefined,
+      ...(method === "GET"
+        ? {}
+        : { body: options.body ? JSON.stringify(options.body) : undefined }),
       signal: requestSignal,
     });
 
@@ -1949,7 +1951,7 @@ export default function todosExtension(pi: ExtensionAPI) {
         const content = input.content ?? "";
         let text = theme.fg("toolTitle", theme.bold("todo ")) + theme.fg("muted", action);
         if (id) text += " " + theme.fg("accent", normalizeKnownTaskId(id));
-        if (content) text += " " + theme.fg("dim", `\"${content}\"`);
+        if (content) text += " " + theme.fg("dim", `"${content}"`);
         return new Text(text, 0, 0);
       },
 

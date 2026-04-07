@@ -609,7 +609,7 @@ export default function (pi: ExtensionAPI) {
   }
 
   function handleDaemonMessage(msg: DaemonToClientMessage) {
-    for (const h of [...daemonMessageHandlers]) {
+    for (const h of daemonMessageHandlers) {
       try {
         h(msg);
       } catch {

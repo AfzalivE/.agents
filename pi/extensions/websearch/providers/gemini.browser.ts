@@ -103,7 +103,7 @@ async function fetchAccessToken(cookies: BrowserCookie[], signal?: AbortSignal):
   });
 
   for (const key of ["SNlM0e", "thykhd"]) {
-    const match = html.match(new RegExp(`\"${key}\":\"([^\\\"]*)\"`));
+    const match = html.match(new RegExp(`"${key}":"([^\\"]*)"`));
     if (match?.[1]) return match[1];
   }
 

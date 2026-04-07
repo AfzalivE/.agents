@@ -55,7 +55,7 @@ export async function searchWithPiAnthropic(
 
 function buildAnthropicHeaders(selection: PiModelSelection): Record<string, string> {
   const credential = getAnthropicCredential(selection);
-  const headers = { ...(selection.headers ?? {}) };
+  const headers = { ...selection.headers };
 
   if (isAnthropicOAuthToken(credential)) {
     return {

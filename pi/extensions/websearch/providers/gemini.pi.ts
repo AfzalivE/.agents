@@ -65,7 +65,7 @@ function resolveGeminiInteractionsUrl(baseUrl?: string): string {
 }
 
 function buildGeminiHeaders(selection: PiModelSelection): Record<string, string> {
-  const headers = { ...(selection.headers ?? {}) };
+  const headers = { ...selection.headers };
 
   return {
     ...headers,

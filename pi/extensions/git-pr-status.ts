@@ -235,12 +235,12 @@ export default function gitPrStatusExtension(pi: ExtensionAPI) {
       if (activeRefreshAbortController === abortController) {
         activeRefreshAbortController = undefined;
       }
-      if (refreshInFlight !== promise) return;
-
-      refreshInFlight = null;
-      if (refreshQueued) {
-        refreshQueued = false;
-        scheduleRefresh(0);
+      if (refreshInFlight === promise) {
+        refreshInFlight = null;
+        if (refreshQueued) {
+          refreshQueued = false;
+          scheduleRefresh(0);
+        }
       }
     }
   }
