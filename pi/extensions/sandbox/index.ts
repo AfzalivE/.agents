@@ -173,6 +173,7 @@ type FilesystemViolationResolution =
   | {
       kind: "allow-retry";
       message: string;
+      retrySuccessMessage: string;
       retryFailureMessage: string;
       retrySkippedMessage: string;
     }
@@ -475,6 +476,10 @@ function extractSandboxViolationLines(output: string): string[] {
     .filter(Boolean);
 }
 
+function stripSandboxViolationAnnotations(text: string): string {
+  return text.replace(/\n?<sandbox_violations>[\s\S]*?<\/sandbox_violations>\n?/gi, "\n").replace(/^\n+|\n+$/g, "");
+}
+
 function extractAppendedSandboxAnnotation(
   original: string,
   annotated: string,
@@ -482,8 +487,8 @@ function extractAppendedSandboxAnnotation(
 ): string {
   if (annotated === original) return "";
 
-  if (skipViolationLines <= 0 && annotated.startsWith(original)) {
-    return annotated.slice(original.length);
+  if (annotated.startsWith(original)) {
+    return stripSandboxViolationAnnotations(annotated.slice(original.length));
   }
 
   const violationLines = extractSandboxViolationLines(annotated);
@@ -491,7 +496,9 @@ function extractAppendedSandboxAnnotation(
     skipViolationLines > 0 ? violationLines.slice(Math.min(skipViolationLines, violationLines.length)) : violationLines;
   if (newViolationLines.length === 0) return "";
 
-  return `\n<sandbox_violations>\n${newViolationLines.join("\n")}\n</sandbox_violations>`;
+  // Filesystem and network sandbox violations are summarized elsewhere via compact
+  // extension messages, so suppress the verbose synthetic annotation block.
+  return "";
 }
 
 function sanitizeExtractedPath(path: string): string | undefined {
@@ -740,18 +747,14 @@ const FILESYSTEM_ALLOW_ADAPT_OPTION = "Allow but adapt for side-effects";
 const FILESYSTEM_DENY_OPTION = "Deny";
 
 function getFilesystemPromptOptions(
-  violation: FilesystemViolation,
+  _violation: FilesystemViolation,
   autoRetryAvailable: boolean,
 ): string[] {
   if (!autoRetryAvailable) {
     return [FILESYSTEM_ALLOW_ADAPT_OPTION, FILESYSTEM_DENY_OPTION];
   }
 
-  if (violation.kind === "read") {
-    return [FILESYSTEM_ALLOW_RETRY_OPTION, FILESYSTEM_ALLOW_ADAPT_OPTION, FILESYSTEM_DENY_OPTION];
-  }
-
-  return [FILESYSTEM_ALLOW_ADAPT_OPTION, FILESYSTEM_ALLOW_RETRY_OPTION, FILESYSTEM_DENY_OPTION];
+  return [FILESYSTEM_ALLOW_RETRY_OPTION, FILESYSTEM_ALLOW_ADAPT_OPTION, FILESYSTEM_DENY_OPTION];
 }
 
 function parseFilesystemPromptSelection(
@@ -763,28 +766,32 @@ function parseFilesystemPromptSelection(
   return "deny";
 }
 
-function formatFilesystemAllowRetryMessage(target: string): string {
-  return `[sandbox] Allowed filesystem ${target} for this session. Automatically retrying.`;
+function formatFilesystemAllowRetryMessage(_target: string): string {
+  return "\nSandbox blocked access.\n\nGranting access and retrying the command per user request...\n\n";
 }
 
-function formatFilesystemAllowAdaptMessage(target: string): string {
-  return `[sandbox] Allowed filesystem ${target} for this session. Adapt the command for possible side effects, and then try again.`;
+function formatFilesystemAllowAdaptMessage(_target: string): string {
+  return "\nSandbox blocked access.\n\nAccess granted for this session. Retry the command manually if appropriate.";
 }
 
-function formatFilesystemDeniedMessage(target: string): string {
-  return `[sandbox] Filesystem ${target} remains blocked for this session.`;
+function formatFilesystemDeniedMessage(_target: string): string {
+  return "\nSandbox blocked access.\n\nAccess remains denied for this session.";
 }
 
-function formatFilesystemAlreadyAllowedMessage(target: string): string {
-  return `[sandbox] Filesystem ${target} is already allowed for this session. The remaining failure is likely unrelated to sandbox filesystem policy. Inspect the remaining error, adapt the command if needed, and then try again.`;
+function formatFilesystemAlreadyAllowedMessage(_target: string): string {
+  return "\nSandbox blocked access again after permission had already been granted. The remaining failure may be unrelated to sandbox policy.";
 }
 
-function formatFilesystemRetryFailedMessage(target: string): string {
-  return `[sandbox] Automatic retry still failed. Filesystem ${target} is now allowed for this session. Adapt the command for possible side effects, and then try again.`;
+function formatFilesystemRetrySucceededMessage(_target: string): string {
+  return "";
 }
 
-function formatFilesystemRetrySkippedMessage(target: string): string {
-  return `[sandbox] Automatic retry was skipped because the command timeout was already exhausted. Filesystem ${target} is now allowed for this session. Adapt the command for possible side effects, and then try again.`;
+function formatFilesystemRetryFailedMessage(_target: string): string {
+  return "\nAccess granted and command retried per user request, but the command still exited non-zero. The sandbox block was resolved; the remaining failure may be unrelated.";
+}
+
+function formatFilesystemRetrySkippedMessage(_target: string): string {
+  return "\nAccess granted for this session, but automatic retry was skipped because the timeout was exhausted. Retry the command manually if needed.";
 }
 
 function appendOutputPostamble(postamble: string, addition: string, output: string): string {
@@ -896,6 +903,7 @@ async function handleFilesystemViolation(options: {
         return {
           kind: "allow-retry",
           message: formatFilesystemAllowRetryMessage(target),
+          retrySuccessMessage: formatFilesystemRetrySucceededMessage(target),
           retryFailureMessage: formatFilesystemRetryFailedMessage(target),
           retrySkippedMessage: formatFilesystemRetrySkippedMessage(target),
         };
@@ -1296,7 +1304,9 @@ function createSandboxedBashOps(options: SandboxedBashOpsOptions): BashOperation
         }
 
         let retryPostamble = processedRetry.postamble;
-        if (processedRetry.exitCode !== 0 && !processedRetry.resolution) {
+        if (processedRetry.exitCode === 0) {
+          retryPostamble = appendOutputPostamble(retryPostamble, retryResolution.retrySuccessMessage, retryRun.attempt.combinedOutput);
+        } else if (!processedRetry.resolution) {
           retryPostamble = appendOutputPostamble(retryPostamble, retryResolution.retryFailureMessage, retryRun.attempt.combinedOutput);
         }
 
