@@ -6,13 +6,23 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-cod
 import {
   CURRENT_SESSION_VERSION,
   SessionManager,
+  highlightCode,
   type SessionHeader,
 } from "@mariozechner/pi-coding-agent";
+import { Box, Text } from "@mariozechner/pi-tui";
 
 const TERMINAL_FLAG = "branch-term";
 const TMUX_LAYOUT_FLAG = "branch-tmux-layout";
+const BRANCH_MESSAGE_TYPE = "branch-term-message";
+const MANUAL_RESUME_INTRO =
+  "Branch session ready. Run this command in a separate terminal or tmux pane";
 
 type TmuxLayout = "window" | "split-right" | "split-down";
+type CommandMessageDetails = {
+  intro: string;
+  command: string;
+  copiedToClipboard: boolean;
+};
 
 const TMUX_LAYOUT_CONFIG: Record<
   TmuxLayout,
@@ -176,16 +186,33 @@ function copyToClipboard(text: string): boolean {
   return false;
 }
 
-function notifyManualResume(ctx: ExtensionCommandContext, command: string): void {
-  if (!ctx.hasUI) return;
+function formatCommandMessageIntro(intro: string, copiedToClipboard: boolean): string {
+  return `${intro}${copiedToClipboard ? " (copied to clipboard)" : ""}:`;
+}
 
-  const copied = copyToClipboard(command);
-  const hint = copied
-    ? "Paste in a new terminal/split (copied to clipboard):"
-    : "Copy and paste in a new terminal/split:";
+function showCommandMessage(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  intro: string,
+  command: string,
+): void {
+  const copiedToClipboard = copyToClipboard(command);
+  if (!ctx.hasUI) {
+    console.log(formatCommandMessageIntro(intro, copiedToClipboard));
+    console.log(command);
+    return;
+  }
 
-  ctx.ui.notify(hint, "info");
-  ctx.ui.notify(ctx.ui.theme.fg("text", command), "info");
+  pi.sendMessage({
+    customType: BRANCH_MESSAGE_TYPE,
+    content: intro,
+    display: true,
+    details: {
+      intro,
+      command,
+      copiedToClipboard,
+    } satisfies CommandMessageDetails,
+  });
 }
 
 function hasValidSessionFile(sessionFile: string): boolean {
@@ -222,6 +249,30 @@ function createFreshSessionFile(cwd: string, sessionDir: string): string {
 }
 
 export default function (pi: ExtensionAPI) {
+  pi.registerMessageRenderer(BRANCH_MESSAGE_TYPE, (message, _options, theme) => {
+    const details = message.details as CommandMessageDetails | undefined;
+    if (!details || typeof details.intro !== "string" || typeof details.command !== "string") {
+      return new Text(typeof message.content === "string" ? message.content : "", 0, 0);
+    }
+
+    const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
+    box.addChild(
+      new Text(
+        [
+          theme.fg(
+            "customMessageText",
+            formatCommandMessageIntro(details.intro, details.copiedToClipboard),
+          ),
+          "",
+          highlightCode(details.command, "bash").join("\n"),
+        ].join("\n"),
+        0,
+        0,
+      ),
+    );
+    return box;
+  });
+
   pi.registerFlag(TERMINAL_FLAG, {
     description:
       "Command to open a new terminal. Use {cwd} for working directory and optional {command} for the pi command.",
@@ -237,12 +288,15 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("branch", {
     description: "Fork current session into tmux (window/split) or show a resume command",
     handler: async (args, ctx) => {
-      await ctx.waitForIdle();
-
       const parsedArgs = parseBranchArgs(args);
       if (parsedArgs.error) {
         if (ctx.hasUI) ctx.ui.notify(parsedArgs.error, "warning");
         return;
+      }
+
+      if (!ctx.isIdle()) {
+        if (ctx.hasUI) ctx.ui.notify("Queued /branch", "info");
+        await ctx.waitForIdle();
       }
 
       const sessionFile = ctx.sessionManager.getSessionFile();
@@ -285,8 +339,10 @@ export default function (pi: ExtensionAPI) {
         spawnDetached("bash", ["-lc", command], (error) => {
           if (ctx.hasUI) {
             ctx.ui.notify(`Terminal command failed: ${error.message}`, "error");
-            notifyManualResume(ctx, resumeCommand);
+          } else {
+            console.error(`Terminal command failed: ${error.message}`);
           }
+          showCommandMessage(pi, ctx, MANUAL_RESUME_INTRO, resumeCommand);
         });
         if (ctx.hasUI) ctx.ui.notify("Opened fork in new terminal", "info");
         return;
@@ -311,11 +367,13 @@ export default function (pi: ExtensionAPI) {
         const tmuxCommand = `pi --session ${shellQuote(forkFile)}`;
         const result = await pi.exec("tmux", layoutConfig.commandArgs(ctx.cwd, tmuxCommand));
         if (result.code !== 0) {
+          const details = result.stderr || result.stdout || "tmux command failed";
           if (ctx.hasUI) {
-            const details = result.stderr || result.stdout || "tmux command failed";
             ctx.ui.notify(`tmux failed: ${details}`, "warning");
-            notifyManualResume(ctx, resumeCommand);
+          } else {
+            console.error(`tmux failed: ${details}`);
           }
+          showCommandMessage(pi, ctx, MANUAL_RESUME_INTRO, resumeCommand);
           return;
         }
 
@@ -323,7 +381,7 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      notifyManualResume(ctx, resumeCommand);
+      showCommandMessage(pi, ctx, MANUAL_RESUME_INTRO, resumeCommand);
     },
   });
 }
