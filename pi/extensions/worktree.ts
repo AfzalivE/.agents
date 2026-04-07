@@ -19,8 +19,9 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@mariozechner/pi-coding-agent";
-import { DynamicBorder, SessionManager } from "@mariozechner/pi-coding-agent";
+import { CURRENT_SESSION_VERSION, DynamicBorder, SessionManager, type SessionHeader } from "@mariozechner/pi-coding-agent";
 import { Container, type SelectItem, SelectList, Text, matchesKey } from "@mariozechner/pi-tui";
+import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -1109,6 +1110,39 @@ async function createWorktree(
   return targetPath;
 }
 
+function hasValidSessionFile(sessionFile: string): boolean {
+  if (!fs.existsSync(sessionFile)) return false;
+
+  try {
+    const firstLine = fs.readFileSync(sessionFile, "utf8").split("\n", 1)[0]?.trim();
+    if (!firstLine) return false;
+
+    const header = JSON.parse(firstLine) as Partial<SessionHeader>;
+    return header.type === "session" && typeof header.id === "string";
+  } catch {
+    return false;
+  }
+}
+
+function createFreshSessionFile(targetCwd: string, sessionDir: string): string {
+  fs.mkdirSync(sessionDir, { recursive: true });
+
+  const sessionId = randomUUID();
+  const timestamp = new Date().toISOString();
+  const fileTimestamp = timestamp.replace(/[:.]/g, "-");
+  const sessionFile = path.join(sessionDir, `${fileTimestamp}_${sessionId}.jsonl`);
+  const header: SessionHeader = {
+    type: "session",
+    version: CURRENT_SESSION_VERSION,
+    id: sessionId,
+    timestamp,
+    cwd: targetCwd,
+  };
+
+  fs.writeFileSync(sessionFile, `${JSON.stringify(header)}\n`);
+  return sessionFile;
+}
+
 async function switchToWorktree(
   ctx: ExtensionCommandContext,
   targetPath: string,
@@ -1142,10 +1176,28 @@ async function switchToWorktree(
   }
 
   const sessionDir = ctx.sessionManager.getSessionDir();
-  const nextSession = SessionManager.forkFrom(currentSessionFile, targetPath, sessionDir);
-  const sessionFile = nextSession.getSessionFile();
-  if (!sessionFile) {
-    throw new Error(`Failed to create a session for worktree: ${targetPath}`);
+  const hasAssistantReply = ctx.sessionManager.getEntries().some(
+    (entry) => entry.type === "message" && entry.message.role === "assistant",
+  );
+
+  let sessionFile: string;
+  if (hasValidSessionFile(currentSessionFile)) {
+    const nextSession = SessionManager.forkFrom(currentSessionFile, targetPath, sessionDir);
+    const forkedSessionFile = nextSession.getSessionFile();
+    if (!forkedSessionFile) {
+      throw new Error(`Failed to create a session for worktree: ${targetPath}`);
+    }
+    sessionFile = forkedSessionFile;
+  } else {
+    if (hasAssistantReply) {
+      throw new Error(`Current session file is missing or invalid: ${currentSessionFile}`);
+    }
+
+    const message = "Current session has no persisted history yet. Switching with a fresh session.";
+    if (ctx.hasUI) ctx.ui.notify(message, "warning");
+    else console.log(message);
+
+    sessionFile = createFreshSessionFile(targetPath, sessionDir);
   }
 
   const result = await ctx.switchSession(sessionFile);
