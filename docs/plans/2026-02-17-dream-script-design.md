@@ -1,11 +1,11 @@
-# Sleep Script Design
+# Dream Script Design
 
-Nightly maintenance for the agent-brain vault. Consolidates scattered knowledge, reorganizes structure, and gradually weakens stale content — analogous to what sleep does for the brain.
+Nightly maintenance for the agent-brain vault. Consolidates scattered knowledge, reorganizes structure, and gradually weakens stale content — analogous to what dreaming does for the brain.
 
 ## Deliverables
 
-1. `skills/sleep/SKILL.md` — Skill instructions for vault maintenance
-2. `bin/sleep` — Bash wrapper for cron/CLI invocation
+1. `skills/dream/SKILL.md` — Skill instructions for vault maintenance
+2. `bin/dream` — Bash wrapper for cron/CLI invocation
 
 ## Operations
 
@@ -36,12 +36,12 @@ Separate from weakening. Only for entries that are factually wrong or superseded
 
 ## Autonomy model
 
-Fully autonomous. The vault is the agent's own memory — no human management required. The sleep script runs unattended (e.g., via cron) and commits changes directly.
+Fully autonomous. The vault is the agent's own memory — no human management required. The dream script runs unattended (e.g., via cron) and commits changes directly.
 
 Safety relies on conservatism, not detection. Only archiving self-heals naturally (a session that needs archived content restores it). For consolidation, reorganization, and deletion there is no automatic way to detect a bad change — so the primary protection is not making bold changes in the first place. Git history is a last resort.
 
 Conservative guardrails:
-- Weakening thresholds default to 60/90 days, stored in `agent-brain/.sleep-config.md` so the sleep script can tune them over time based on vault behavior
+- Weakening thresholds default to 60/90 days, stored in `agent-brain/.dream-config.md` so the dream script can tune them over time based on vault behavior
 - Deletion requires high confidence
 - When in doubt: skip rather than weaken, weaken rather than archive, archive rather than delete
 
@@ -98,7 +98,7 @@ Three layers of defense:
 2. **`--allowedTools`** (Claude Code) — Bash restricted to `git`, `mv`, `mkdir`
 3. **`--max-budget-usd 0.50`** — cost cap per run
 
-Settings stored in `config/sleep-srt.json`:
+Settings stored in `config/dream-srt.json`:
 
 ```json
 {
@@ -113,7 +113,7 @@ Settings stored in `config/sleep-srt.json`:
 
 Requires: `npm install -g @anthropic-ai/sandbox-runtime`
 
-## Bash wrapper (`bin/sleep`)
+## Bash wrapper (`bin/dream`)
 
 Follows `bin/sync` conventions:
 
@@ -125,7 +125,7 @@ Pre-audit runs entirely on the host (pure bash, no LLM). Only files needing atte
 ### Pre-audit output
 
 ```
-=== Agent Brain Sleep Audit ===
+=== Agent Brain Dream Audit ===
 Files: 11 (8 strong, 2 weak, 1 dormant)
 Total size: 4.2 KB
 Thresholds: weaken=60d, archive=90d
@@ -143,7 +143,7 @@ Candidates for attention:
 
 ### Invocation
 
-Runs `srt claude -p` with the `config/sleep-srt.json` settings and the pre-audit summary appended to the system prompt.
+Runs `srt claude -p` with the `config/dream-srt.json` settings and the pre-audit summary appended to the system prompt.
 
 ## Archive structure
 
@@ -161,8 +161,8 @@ agent-brain/
 Each layer of the vault stays bounded:
 
 - **Index.md** — Links to MOC categories only, not individual notes. Grows slowly (new category maybe once or twice a year). MOC splitting adds entries, but weakening removes them.
-- **MOC pages** — Link to individual notes. Weakening unlinks stale entries, archiving removes them entirely. If a MOC page still outgrows a single page, the sleep script splits it into sub-categories.
-- **Individual notes** — Atomic. Split if they grow too large. Created during sessions, weakened/archived by sleep.
+- **MOC pages** — Link to individual notes. Weakening unlinks stale entries, archiving removes them entirely. If a MOC page still outgrows a single page, the dream script splits it into sub-categories.
+- **Individual notes** — Atomic. Split if they grow too large. Created during sessions, weakened/archived by dream.
 - **Archive** — Grows indefinitely but is never loaded into context. Just a git-tracked safety net.
 
 Self-regulating: weakening and archiving keep the active vault small, which keeps future runs cheap. The bash pre-audit ensures only files needing attention are read by the LLM.

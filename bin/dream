@@ -4,8 +4,8 @@ set -euo pipefail
 VAULT_DIR="${HOME}/.agents/agent-brain"
 ARCHIVE_DIR="${VAULT_DIR}/archive"
 AGENTS_DIR="${HOME}/.agents"
-CONFIG_FILE="${AGENTS_DIR}/config/sleep.yaml"
-SRT_SETTINGS="${AGENTS_DIR}/config/sleep-srt.json"
+CONFIG_FILE="${AGENTS_DIR}/config/dream.yaml"
+SRT_SETTINGS="${AGENTS_DIR}/config/dream-srt.json"
 PI_SANDBOX_EXTENSION="${HOME}/.pi/agent/extensions/sandbox"
 
 DEFAULT_RUNNER="claude"
@@ -24,7 +24,7 @@ usage() {
 Nightly vault maintenance for agent-brain.
 
 Usage:
-  sleep [--dry-run] [--check]
+  dream [--dry-run] [--check]
 
 Options:
   --dry-run   Run pre-audit only, print summary, no LLM call
@@ -133,7 +133,7 @@ is_protected() {
 
 maintenance_prompt() {
   cat <<'EOF'
-Use the `sleep` skill to perform vault maintenance based on the SLEEP_AUDIT below. Work autonomously: plan changes, apply them, and commit. If nothing meaningful needs changing, say so and exit.
+Use the `dream` skill to perform vault maintenance based on the DREAM_AUDIT below. Work autonomously: plan changes, apply them, and commit. If nothing meaningful needs changing, say so and exit.
 EOF
 }
 
@@ -153,7 +153,7 @@ run_claude_maintenance() {
   # which changes its behavior (e.g., tool availability, permission handling).
   unset CLAUDECODE 2>/dev/null || true
 
-  printf '%s\n\nSLEEP_AUDIT:\n%s' "$(maintenance_prompt)" "$audit" \
+  printf '%s\n\nDREAM_AUDIT:\n%s' "$(maintenance_prompt)" "$audit" \
     | "${cmd[@]}"
 }
 
@@ -162,7 +162,7 @@ run_pi_maintenance() {
   local -a cmd=(
     pi
     -e "$PI_SANDBOX_EXTENSION"
-    --skill "${AGENTS_DIR}/skills/sleep"
+    --skill "${AGENTS_DIR}/skills/dream"
     --tools read,bash,edit,write,grep,find,ls
     --no-session
     --verbose
@@ -175,7 +175,7 @@ run_pi_maintenance() {
     exit 1
   fi
 
-  prompt=$(printf '%s\n\nSLEEP_AUDIT:\n%s' "$(maintenance_prompt)" "$audit")
+  prompt=$(printf '%s\n\nDREAM_AUDIT:\n%s' "$(maintenance_prompt)" "$audit")
   "${cmd[@]}" "$prompt"
 }
 
@@ -283,7 +283,7 @@ for f in "$ARCHIVE_DIR"/*.md; do
 done
 
 # --- Format audit ---
-audit="=== Agent Brain Sleep Audit ===
+audit="=== Agent Brain Dream Audit ===
 Files: ${total_files} (${strong_count} strong, ${weak_count} weak, ${dormant_count} dormant)
 Total size: $(( total_size / 1024 ))KB
 Runner: ${RUNNER}
@@ -346,7 +346,7 @@ fi
 
 LOG_DIR="${AGENTS_DIR}/logs"
 mkdir -p "$LOG_DIR"
-LOG_FILE="${LOG_DIR}/sleep-$(date +%Y-%m-%d).log"
+LOG_FILE="${LOG_DIR}/dream-$(date +%Y-%m-%d).log"
 
 if [[ "$RUNNER" == "claude" ]]; then
   echo "Invoking $RUNNER inside srt sandbox for vault maintenance..."
@@ -360,7 +360,7 @@ cd "$VAULT_DIR"
 # Pipe prompt via stdin to avoid srt's shell re-interpreting special characters
 # in the audit text (parentheses, etc.).
 {
-  echo "=== Sleep run: $(date) ==="
+  echo "=== Dream run: $(date) ==="
   echo ""
   echo "$audit"
   echo ""
@@ -370,4 +370,4 @@ cd "$VAULT_DIR"
 } 2>&1 | tee -a "$LOG_FILE"
 
 echo ""
-echo "Sleep maintenance complete."
+echo "Dream maintenance complete."

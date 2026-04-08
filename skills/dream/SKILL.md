@@ -1,13 +1,13 @@
 ---
-name: sleep
+name: dream
 description: Nightly vault maintenance — consolidate, reorganize, and weaken stale content in agent-brain.
 ---
 
-# Sleep — Vault Maintenance
+# Dream — Vault Maintenance
 
 You are running autonomous nightly maintenance on the agent-brain vault at `~/.agents/agent-brain/`.
 
-The bash wrapper has already run a pre-audit and appended it to your system prompt as `SLEEP_AUDIT`. Use it to decide which files need attention.
+The bash wrapper has already run a pre-audit and appended it to your system prompt as `DREAM_AUDIT`. Use it to decide which files need attention.
 
 ## Operations (in priority order)
 
@@ -33,11 +33,11 @@ Files move through three states based on staleness:
 | **Weak** | `agent-brain/` | No |
 | **Dormant** | `agent-brain/archive/` | No |
 
-Use the thresholds from `config/sleep.yaml`:
+Use the thresholds from `config/dream.yaml`:
 - **Strong → Weak**: File untouched for `weaken_days`+ days AND still linked in MOC. Action: remove its `[[wikilink]]` from the relevant MOC page.
 - **Weak → Dormant**: File untouched for `archive_days`+ days AND already unlinked. Action: `mv` the file to `agent-brain/archive/`.
 
-Never weaken or archive files listed in `config/sleep.yaml` under `protected_files`.
+Never weaken or archive files listed in `config/dream.yaml` under `protected_files`.
 
 ### 4. Archiving shipped plans
 - When a plan file (tagged `planning`) has a **Status** of "Shipped", move it intact to `archive/plans/`.
@@ -62,6 +62,6 @@ Never weaken or archive files listed in `config/sleep.yaml` under `protected_fil
 
 ## Commit guidelines
 
-- One commit for all sleep maintenance changes
-- Subject: "Sleep: <brief summary of what changed>"
+- One commit for all dream maintenance changes
+- Subject: "Dream: <brief summary of what changed>"
 - Body: list each action taken (consolidated X, weakened Y, archived Z)
