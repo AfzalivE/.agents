@@ -12,14 +12,18 @@ let startWatch = false;
 let browserChoice = "auto"; // auto|chromium|chrome
 let executableOverride = undefined;
 let profileSrcOverride = undefined;
+let profileDirectoryOverride = undefined;
 
 const usage = () => {
   console.log(
-    "Usage: browser-start.js [--profile] [--watch] [--browser <chromium|chrome>] [--executable <path>]",
+    "Usage: browser-start.js [--profile] [--profile-dir <name>] [--watch] [--browser <chromium|chrome>] [--executable <path>]",
   );
   console.log("\nOptions:");
   console.log(
     "  --profile              Copy your browser profile (cookies, logins)",
+  );
+  console.log(
+    '  --profile-dir <name>   Launch a specific profile directory name or exact path',
   );
   console.log(
     "  --watch                Start browser-watch.js in the background (JSONL logs)",
@@ -37,6 +41,9 @@ const usage = () => {
     "  BROWSER_TOOLS_PROFILE_SRC  Profile directory to rsync from (overrides auto)",
   );
   console.log(
+    "  BROWSER_TOOLS_PROFILE_DIRECTORY  Profile directory name",
+  );
+  console.log(
     "  BROWSER_TOOLS_LOG_ROOT  Directory for browser-watch logs (defaults to /tmp/agent-browser-tools/logs)",
   );
 };
@@ -45,6 +52,9 @@ for (let i = 0; i < args.length; i++) {
   const arg = args[i];
   if (arg === "--profile") {
     useProfile = true;
+  } else if (arg === "--profile-dir") {
+    useProfile = true;
+    profileDirectoryOverride = args[++i];
   } else if (arg === "--watch") {
     startWatch = true;
   } else if (arg === "--browser") {
@@ -65,7 +75,8 @@ browserChoice = process.env.BROWSER_TOOLS_BROWSER || browserChoice;
 executableOverride = process.env.BROWSER_TOOLS_EXECUTABLE || executableOverride;
 profileSrcOverride =
   process.env.BROWSER_TOOLS_PROFILE_SRC || profileSrcOverride;
-
+profileDirectoryOverride =
+  process.env.BROWSER_TOOLS_PROFILE_DIRECTORY || profileDirectoryOverride;
 if (!["auto", "chromium", "chrome"].includes(browserChoice)) {
   usage();
   process.exit(1);
@@ -126,11 +137,12 @@ const getDefaultProfileSrc = (kind) =>
       ? `${process.env.HOME}/Library/Application Support/Chromium/`
       : `${process.env.HOME}/.config/chromium/`;
 
-const buildBrowserConfig = ({ label, candidates, profileSrc }) => ({
+const buildBrowserConfig = ({ label, candidates, profileSrc, profileDirectory }) => ({
   label,
   candidates,
   executable: findExecutable(candidates),
   profileSrc,
+  profileDirectory,
 });
 
 const getBrowserSelection = () => {
@@ -149,6 +161,7 @@ const getBrowserSelection = () => {
         profileSrc:
           profileSrcOverride ||
           (browserChoice === "auto" ? null : getDefaultProfileSrc(browserChoice)),
+        profileDirectory: profileDirectoryOverride,
       }),
     };
   }
@@ -163,6 +176,7 @@ const getBrowserSelection = () => {
           ]
         : ["chromium", "chromium-browser"],
     profileSrc: profileSrcOverride || getDefaultProfileSrc("chromium"),
+    profileDirectory: profileDirectoryOverride,
   });
 
   const chrome = buildBrowserConfig({
@@ -175,6 +189,7 @@ const getBrowserSelection = () => {
           ]
         : ["google-chrome", "google-chrome-stable", "chrome"],
     profileSrc: profileSrcOverride || getDefaultProfileSrc("chrome"),
+    profileDirectory: profileDirectoryOverride,
   });
 
   return {
@@ -262,6 +277,7 @@ spawn(
   [
     "--remote-debugging-port=9222",
     `--user-data-dir=${SCRAPING_DIR}`,
+    ...(browserConfig.profileDirectory ? [`--profile-directory=${browserConfig.profileDirectory}`] : []),
     "--no-first-run",
     "--no-default-browser-check",
   ],
@@ -292,5 +308,5 @@ if (!connected) {
 if (startWatch) startWatcher();
 
 console.log(
-  `✓ ${browserConfig.label} started on :9222${useProfile ? " with your profile" : ""}${startWatch ? " (watch enabled)" : ""}`,
+  `✓ ${browserConfig.label} started on :9222${useProfile ? " with your profile" : ""}${browserConfig.profileDirectory ? ` and profile directory "${browserConfig.profileDirectory}"` : ""}${startWatch ? " (watch enabled)" : ""}`,
 );

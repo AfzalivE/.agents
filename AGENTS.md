@@ -33,7 +33,7 @@
 - Use the `git-commit` skill when you will commit changes or propose commit messages.
 - Use the `git-clean-history` skill when you need to create a clean branch with a refined commit history.
 - Use the `git-worktree` skill when you need to manage git worktrees for multiple branches in separate directories.
-- Use the `browser-tools` skill when you need to interact with web pages or automate browser actions.
+- Use the `browser-tools` skill when you need to interact with web pages or automate browser actions. Always use the Chromium profile named `Claude` (`--browser chromium --profile-dir "Profile 17"`).
 - Use the `homeassistant-ops` skill when you need to operate/refactor a Home Assistant instance.
 - Use the `ms-openapi-explorer` skill when you need to explore Microsoft Graph API v1.0 OpenAPI endpoints, schemas, and permissions.
 - Use the `openscad` skill when you need to create and render OpenSCAD 3D models.

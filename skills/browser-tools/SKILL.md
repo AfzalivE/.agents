@@ -23,18 +23,23 @@ Requires Node.js 20.19+.
 ```bash
 "$HOME/.agents/skills/browser-tools/browser-start.js"              # Dedicated tool profile
 "$HOME/.agents/skills/browser-tools/browser-start.js" --profile    # Seed from your browser profile (cookies, logins)
+"$HOME/.agents/skills/browser-tools/browser-start.js" --profile-dir "Profile 1"
+"$HOME/.agents/skills/browser-tools/browser-start.js" --profile-dir "$HOME/Library/Application Support/Chromium/Profile 1"
 "$HOME/.agents/skills/browser-tools/browser-start.js" --watch      # Start background JSONL logging
 "$HOME/.agents/skills/browser-tools/browser-start.js" --browser chromium
 "$HOME/.agents/skills/browser-tools/browser-start.js" --browser chrome
 ```
 
-Launch a browser with remote debugging on `:9222`. Use `--profile` to preserve your authentication state. If a browser is already running on `:9222`, it is reused; launch options like `--browser`, `--executable`, and `--profile` only affect new browser instances.
+Launch a browser with remote debugging on `:9222`. Use `--profile` to preserve your authentication state. If a browser is already running on `:9222`, it is reused; launch options like `--browser`, `--executable`, and `--profile` only affect new browser instances. Add `--profile-dir` to launch a specific Chromium/Chrome profile directory by name such as `Default` or `Profile 1`, or pass an exact profile path. `--profile-dir` implies `--profile`.
+
+If a browser is already running on `:9222`, stop it first before changing the profile selection.
 
 If the auto-detection picks the wrong browser, set:
 
 - `BROWSER_TOOLS_BROWSER=chromium` (or `chrome`)
 - `BROWSER_TOOLS_EXECUTABLE=/absolute/path/to/browser`
 - `BROWSER_TOOLS_PROFILE_SRC=/absolute/path/to/profile/dir` (optional; useful with `--executable --profile`)
+- `BROWSER_TOOLS_PROFILE_DIR="Profile 1"` (optional)
 
 ## Navigate
 
