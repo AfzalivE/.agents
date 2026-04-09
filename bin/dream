@@ -178,6 +178,7 @@ run_pi_maintenance() {
   local -a cmd=(
     pi
     -e "$PI_SANDBOX_EXTENSION"
+    --sandbox-config "$SRT_SETTINGS"
     --skill "${AGENTS_DIR}/skills/dream"
     --tools read,bash,edit,write,grep,find,ls
     --no-session
