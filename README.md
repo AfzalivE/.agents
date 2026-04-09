@@ -63,6 +63,7 @@ By default it sets up all agents. Pass `--codex`, `--claude`, and/or `--pi` to l
 | answer | `/answer` | Extract and interactively answer agent questions |
 | branch-term | `/branch` | Open a new terminal on the current session's git branch |
 | btw | `/btw` | Run a one-off side request with read-only tools and no context persistence |
+| converge | `/converge` | Compare multiple engineer plans/specs and synthesize one recommended plan |
 | openai-fast | `/fast` | Toggle priority service tier for supported OpenAI models |
 | ghostty |  | Ghostty tab title enhancements while the agent is working, waiting, or idle |
 | git-diff-stats |  | Status bar diff stats for local changes in the current repo |
