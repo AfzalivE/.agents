@@ -217,5 +217,6 @@ $RECYCLE.BIN/
 
 # End of https://www.toptal.com/developers/gitignore/api/macos,linux,windows,node
 skills/ms-openapi-explorer/cache/*
+skills/doist
 agent-brain/
 logs/
