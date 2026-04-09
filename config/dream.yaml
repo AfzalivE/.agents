@@ -6,3 +6,11 @@ thresholds:
 
 protected_files:
   - Index.md
+  - Agenda MOC.md
+  - Preferences.md
+  - Operating Rhythm.md
+  - Decisions - .agents.md
+
+protected_note_tags:
+  - agenda
+  - planning

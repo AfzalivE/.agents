@@ -7,6 +7,8 @@ AGENTS_DIR="${HOME}/.agents"
 CONFIG_FILE="${AGENTS_DIR}/config/dream.yaml"
 SRT_SETTINGS="${AGENTS_DIR}/config/dream-srt.json"
 PI_SANDBOX_EXTENSION="${HOME}/.pi/agent/extensions/sandbox"
+REFERENCE_CHECKER="${AGENTS_DIR}/skills/dream/scripts/validate-references.mjs"
+PLAN_INTEGRITY_CHECKER="${AGENTS_DIR}/skills/dream/scripts/check-plan-integrity.mjs"
 
 DEFAULT_RUNNER="claude"
 DEFAULT_WEAKEN_DAYS=60
@@ -18,6 +20,7 @@ RUNNER="$DEFAULT_RUNNER"
 WEAKEN_DAYS="$DEFAULT_WEAKEN_DAYS"
 ARCHIVE_DAYS="$DEFAULT_ARCHIVE_DAYS"
 declare -a PROTECTED=("Index.md")
+declare -a PROTECTED_NOTE_TAGS=("planning")
 
 usage() {
   cat <<'EOF'
@@ -31,6 +34,7 @@ Options:
   --check     Check that all dependencies are installed
 
 Dependencies:
+  node      (should already be installed)
   yq        brew install yq
   git       (should already be installed)
   srt       npm install -g @anthropic-ai/sandbox-runtime (if runner=claude)
@@ -72,6 +76,7 @@ check_deps() {
   local missing=0
 
   echo "Configured runner: $RUNNER"
+  print_dep_status node 1 missing
   print_dep_status yq 1 missing
   print_dep_status git 1 missing
 
@@ -118,6 +123,15 @@ parse_config() {
     [[ -n "$file" && "$file" != "null" ]] && PROTECTED+=("$file")
   done < <(yq '.protected_files[]' "$CONFIG_FILE" 2>/dev/null || true)
 
+  PROTECTED_NOTE_TAGS=()
+  while IFS= read -r tag; do
+    [[ -n "$tag" && "$tag" != "null" ]] && PROTECTED_NOTE_TAGS+=("$tag")
+  done < <(yq '.protected_note_tags[]' "$CONFIG_FILE" 2>/dev/null || true)
+
+  if [[ ${#PROTECTED_NOTE_TAGS[@]} -eq 0 ]]; then
+    PROTECTED_NOTE_TAGS=("planning")
+  fi
+
   validate_runner
 }
 
@@ -133,7 +147,9 @@ is_protected() {
 
 maintenance_prompt() {
   cat <<'EOF'
-Use the `dream` skill to perform vault maintenance based on the DREAM_AUDIT below. Work autonomously: plan changes, apply them, and commit. If nothing meaningful needs changing, say so and exit.
+Use the `dream` skill to perform vault maintenance based on the DREAM_AUDIT below. Fix broken note references before other maintenance, then re-validate references after your edits. Work autonomously: plan changes, apply them, and commit. If nothing meaningful needs changing, say so and exit.
+Treat stale referential prose as a reference bug too: if a note names an old section/title/location that has been renamed, moved, merged, or replaced, update the wording even if the literal link still resolves.
+Plan files are protected by a precomputed snapshot and a post-run integrity check. Do not trim, summarize, condense, paraphrase, or rewrite them. Only surgical reference fixes and intact archival moves are allowed. If DREAM_AUDIT includes a plan-integrity verifier command, run it before committing.
 EOF
 }
 
@@ -143,7 +159,7 @@ run_claude_maintenance() {
     --settings "$SRT_SETTINGS"
     claude -p
     --dangerously-skip-permissions
-    --allowedTools "Read,Edit,Write,Glob,Grep,Bash\(git:*,mv:*,mkdir:*\)"
+    --allowedTools "Read,Edit,Write,Glob,Grep,Bash\(git:*,mv:*,mkdir:*,node:*\)"
     --model opus
     --max-budget-usd 1.00
     --verbose
@@ -186,6 +202,90 @@ run_agent_maintenance() {
   esac
 }
 
+run_reference_check() {
+  local label="$1"
+  local output=""
+  local status=0
+
+  if [[ ! -f "$REFERENCE_CHECKER" ]]; then
+    echo "error: reference checker not found at $REFERENCE_CHECKER" >&2
+    exit 1
+  fi
+
+  set +e
+  output=$(node "$REFERENCE_CHECKER" --vault "$VAULT_DIR" --label "$label" 2>&1)
+  status=$?
+  set -e
+
+  if [[ $status -gt 1 ]]; then
+    printf '%s\n' "$output" >&2
+    echo "error: reference checker failed" >&2
+    exit 1
+  fi
+
+  REFERENCE_REPORT="$output"
+  REFERENCE_UNRESOLVED=0
+
+  if [[ "$output" =~ unresolved=([0-9]+) ]]; then
+    REFERENCE_UNRESOLVED="${BASH_REMATCH[1]}"
+  elif [[ $status -ne 0 ]]; then
+    REFERENCE_UNRESOLVED=1
+  fi
+}
+
+create_plan_snapshot() {
+  local snapshot_base=""
+  local tmp_root="${TMPDIR:-/tmp}"
+  local tags_csv=""
+
+  if [[ ! -f "$PLAN_INTEGRITY_CHECKER" ]]; then
+    echo "error: plan integrity checker not found at $PLAN_INTEGRITY_CHECKER" >&2
+    exit 1
+  fi
+
+  snapshot_base=$(mktemp "${tmp_root%/}/dream-plan-snapshot.XXXXXX")
+  PLAN_SNAPSHOT_FILE="${snapshot_base}.json"
+  mv "$snapshot_base" "$PLAN_SNAPSHOT_FILE"
+  tags_csv=$(IFS=,; echo "${PROTECTED_NOTE_TAGS[*]}")
+  node "$PLAN_INTEGRITY_CHECKER" snapshot --vault "$VAULT_DIR" --output "$PLAN_SNAPSHOT_FILE" --tags "$tags_csv"
+}
+
+run_plan_integrity_check() {
+  local label="$1"
+  local output=""
+  local status=0
+  local tags_csv=""
+
+  set +e
+  tags_csv=$(IFS=,; echo "${PROTECTED_NOTE_TAGS[*]}")
+  output=$(node "$PLAN_INTEGRITY_CHECKER" verify --vault "$VAULT_DIR" --snapshot "$PLAN_SNAPSHOT_FILE" --label "$label" --tags "$tags_csv" 2>&1)
+  status=$?
+  set -e
+
+  if [[ $status -gt 1 ]]; then
+    printf '%s\n' "$output" >&2
+    echo "error: plan integrity checker failed" >&2
+    exit 1
+  fi
+
+  PLAN_INTEGRITY_REPORT="$output"
+  PLAN_INTEGRITY_VIOLATIONS=0
+
+  if [[ "$output" =~ violations=([0-9]+) ]]; then
+    PLAN_INTEGRITY_VIOLATIONS="${BASH_REMATCH[1]}"
+  elif [[ $status -ne 0 ]]; then
+    PLAN_INTEGRITY_VIOLATIONS=1
+  fi
+}
+
+cleanup() {
+  if [[ -n "${PLAN_SNAPSHOT_FILE:-}" && -f "${PLAN_SNAPSHOT_FILE:-}" ]]; then
+    rm -f "$PLAN_SNAPSHOT_FILE"
+  fi
+}
+
+trap cleanup EXIT
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) DRY_RUN=1; shift ;;
@@ -200,6 +300,14 @@ parse_config
 if [[ "$CHECK_ONLY" -eq 1 ]]; then
   check_deps
 fi
+
+REFERENCE_REPORT=""
+REFERENCE_UNRESOLVED=0
+PLAN_INTEGRITY_REPORT=""
+PLAN_INTEGRITY_VIOLATIONS=0
+PLAN_SNAPSHOT_FILE=""
+run_reference_check "pre-audit"
+create_plan_snapshot
 
 # --- Collect MOC files ---
 moc_files=("$VAULT_DIR/Index.md")
@@ -291,6 +399,14 @@ Thresholds: weaken=${WEAKEN_DAYS}d, archive=${ARCHIVE_DAYS}d
 
 Candidates for attention:"
 
+audit+=$'\n\nReference integrity:'
+audit+=$'\n'"$REFERENCE_REPORT"
+audit+=$'\n'
+audit+=$'\nPlan protection:'
+audit+=$'\n'"  Snapshot: ${PLAN_SNAPSHOT_FILE}"
+audit+=$'\n'"  Protected tags: $(IFS=,; echo "${PROTECTED_NOTE_TAGS[*]}")"
+audit+=$'\n'"  Verify before commit: node ${PLAN_INTEGRITY_CHECKER} verify --vault ${VAULT_DIR} --snapshot ${PLAN_SNAPSHOT_FILE} --label during-run --tags $(IFS=,; echo "${PROTECTED_NOTE_TAGS[*]}")"
+
 if [[ ${#WEAKEN_LIST[@]} -gt 0 ]]; then
   audit+=$'\n  WEAKEN ('"${WEAKEN_DAYS}"'+ days untouched, still linked):'
   for item in "${WEAKEN_LIST[@]}"; do
@@ -334,7 +450,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
 fi
 
 # --- Check if anything needs attention ---
-if [[ ${#WEAKEN_LIST[@]} -eq 0 && ${#ARCHIVE_LIST[@]} -eq 0 && ${#LARGE_LIST[@]} -eq 0 && ${#RECENT_LIST[@]} -eq 0 ]]; then
+if [[ ${#WEAKEN_LIST[@]} -eq 0 && ${#ARCHIVE_LIST[@]} -eq 0 && ${#LARGE_LIST[@]} -eq 0 && ${#RECENT_LIST[@]} -eq 0 && "$REFERENCE_UNRESOLVED" -eq 0 ]]; then
   echo "Nothing needs attention. Skipping LLM call."
   exit 0
 fi
@@ -368,6 +484,28 @@ cd "$VAULT_DIR"
   echo ""
   echo "=== Finished: $(date) ==="
 } 2>&1 | tee -a "$LOG_FILE"
+
+run_reference_check "post-run"
+run_plan_integrity_check "post-run"
+
+{
+  echo ""
+  echo "$REFERENCE_REPORT"
+  echo ""
+  echo "$PLAN_INTEGRITY_REPORT"
+} | tee -a "$LOG_FILE"
+
+if [[ "$REFERENCE_UNRESOLVED" -gt 0 ]]; then
+  echo ""
+  echo "Dream maintenance left unresolved broken references. See report above." >&2
+  exit 1
+fi
+
+if [[ "$PLAN_INTEGRITY_VIOLATIONS" -gt 0 ]]; then
+  echo ""
+  echo "Dream maintenance rewrote or trimmed protected plan files. See report above." >&2
+  exit 1
+fi
 
 echo ""
 echo "Dream maintenance complete."
