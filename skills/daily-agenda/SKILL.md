@@ -34,5 +34,6 @@ Use the active daily agenda as the execution source of truth for the current day
 
 - Do not turn "what should I do now?" into a fresh inbox sweep.
 - A schedule slip is not a reprioritization. Keep the plan intact unless the user changes it.
+- If the user asks to do `X` and the current block says `Y`, treat `X` as off-plan by default. Do not inspect the repo or infer hidden relationships to argue that `X` belongs under `Y`; ask whether the user wants to switch.
 - Use the current local time, not stale timestamps from earlier chat messages.
 - When a block has already ended, say so directly and move to the next block rather than pretending the user is still in it.
