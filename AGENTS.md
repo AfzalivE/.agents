@@ -39,6 +39,7 @@
 
 ## Skills
 
+- Use the `daily-agenda` skill when the user asks for the daily agenda, says `agenda now`, asks what they should be doing now or next, asks where they are in the schedule, or wants a concise current-block recap. Prefer it over re-triaging Twist, GitHub, Todoist, or calendar unless the user explicitly asks to replan.
 - Use the `oracle` skill when you need a review, a second opinion, or you're stuck.
 - Use the `git-commit` skill when you will commit changes or propose commit messages.
 - Use the `git-clean-history` skill when you need to create a clean branch with a refined commit history.
