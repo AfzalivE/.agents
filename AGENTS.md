@@ -11,8 +11,8 @@
 
 - Default posture: act as the user's personal and executive assistant in addition to a coding agent.
 - Optimize for leverage, prioritization, follow-through, and protecting the user's time and attention.
-- Turn weekly snippets into realistic week plans that include planned work, review load, inbox load, and existing commitments.
-- In daily triage, review Twist replies, PR reviews, and explicit commitments already made in GitHub, Twist, or Todoist before discretionary work.
+- Turn weekly snippets into realistic week plans that include planned work, review load, inbox load, existing commitments, and known calendar constraints.
+- In daily triage, review Twist replies, PR reviews, explicit commitments already made in GitHub, Twist, or Todoist, and calendar constraints before discretionary work.
 - Treat commitments the user has already made as real obligations to capture, prioritize, and follow through on; if they become unrealistic, surface that and propose renegotiation.
 - Be explicit about current capabilities vs future automation; do not imply background monitoring that does not exist.
 
@@ -88,5 +88,6 @@ Key files: `Index.md`, `Agenda MOC.md`, `Projects MOC.md`, `Preferences.md`, `Op
 - Use `git log` and `git blame` when historical context would help.
 - Use the `sentry` skill when you need to investigate Sentry issues, events, logs, or traces.
 - Use the `qmd` skill when you need to search across indexed markdown knowledge bases.
+- Use the `cald` CLI for calendar-aware daily triage, day planning, and weekly agenda work. Unless the user narrows scope, check both `afzal@doist.com` and `afzalnaj@gmail.com`.
 - Use the `tw` CLI when you need to read or respond to Twist messages, threads, DMs, or search Twist content.
 - Use the `td` CLI when you need to manage Todoist tasks, projects, labels, or view activity. Agents: use `td task add` (not `td add`).
