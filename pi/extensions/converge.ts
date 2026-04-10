@@ -9,16 +9,13 @@
  *   (customType: "plan-convergence").
  *
  * Command:
- * - /converge [mode] [goal=<text>] [models=<a,b>] [context=<text>]
+ * - /converge [goal=<text>] [models=<a,b>] [context=<text>]
  *
- * Modes:
- * - auto (default)
- * - uncommitted
- * - branch <name>
- * - commit <sha>
- * - pr <number|url>
- * - folder <paths...>
- * - custom "<instructions>"
+ * Scope resolution:
+ * - /converge always plans against the current repository snapshot.
+ * - If the working tree has local changes, those diffs become mandatory planning context.
+ * - If the working tree is clean, /converge plans from the clean checkout and includes
+ *   committed branch diff context vs the default branch when available.
  *
  * Goal resolution:
  * - If goal= is provided, it is used directly.
@@ -44,20 +41,10 @@ const CONVERGE_UNTRACKED_HASH_DISABLED = "__disabled__";
 const CONVERGE_CANCELLED_ERROR = "Plan convergence aborted";
 const CONVERGE_STALE_SECTION_TITLE = "Repository changed";
 const CONVERGE_STALE_WARNING = "Repository changed while /converge was running.";
-const CONVERGE_STALE_NEXT_STEP =
-  "Results are shown anyway. Run /converge again to refresh them.";
+const CONVERGE_STALE_NEXT_STEP = "Results are shown anyway. Run /converge again to refresh them.";
 const CONVERGE_EVENT_START = "converge:start";
 const CONVERGE_EVENT_END = "converge:end";
-const CONVERGE_MODE_HINTS = [
-  "help",
-  "auto",
-  "uncommitted",
-  "branch",
-  "commit",
-  "pr",
-  "folder",
-  "custom",
-] as const;
+const CONVERGE_ARGUMENT_HINTS = ["help", "goal=", "models=", "context="] as const;
 
 const STATUS_KEY = "0-converge";
 const STATUS_SPINNER_INTERVAL_MS = 80;
@@ -162,27 +149,7 @@ const PLAN_ENGINEERS: Record<EngineerName, EngineerDefinition> = {
 
 const PLAN_ENGINEER_NAMES = Object.keys(PLAN_ENGINEERS) as EngineerName[];
 
-type PlanningTarget =
-  | { type: "auto" }
-  | { type: "uncommitted" }
-  | { type: "branch"; branch: string }
-  | { type: "commit"; sha: string }
-  | { type: "pr"; ref: string }
-  | { type: "folder"; paths: string[] }
-  | { type: "custom"; instructions: string };
-
-type PlanningRequestMode =
-  | "auto"
-  | "uncommitted"
-  | `branch:${string}`
-  | `commit:${string}`
-  | `pr:${string}`
-  | `folder:${string}`
-  | "custom";
-
 type ParsedRequest = {
-  target: PlanningTarget;
-  mode: PlanningRequestMode;
   models: string[];
   rawArgs: string;
   goal?: string;
@@ -267,7 +234,6 @@ type ConvergedPlan = {
 type ConvergeMessageDetails = {
   generatedAt: string;
   request: {
-    mode: PlanningRequestMode;
     goalSource: "argument" | "last-user";
     models: string[];
     rawArgs: string;
@@ -290,7 +256,15 @@ type ConvergeMessageDetails = {
   convergence: ConvergedPlan;
 };
 
-type ConvergeRunResult = { ok: false; error: string } | { ok: true; details: ConvergeMessageDetails };
+type ConvergeRunResult =
+  | { ok: false; error: string }
+  | { ok: true; details: ConvergeMessageDetails };
+
+type RepoSnapshotComparison = {
+  baseBranch: string;
+  mergeBase: string | null;
+  diffFiles: string[];
+};
 
 type ResolvedScope =
   | {
@@ -301,25 +275,9 @@ type ResolvedScope =
       description: string;
     }
   | {
-      kind: "branch-diff";
-      baseBranch: string;
-      mergeBase: string;
-      diffFiles: string[];
-      description: string;
-    }
-  | {
-      kind: "commit";
-      sha: string;
-      description: string;
-    }
-  | {
-      kind: "folder";
-      paths: string[];
-      description: string;
-    }
-  | {
-      kind: "custom";
-      instructions: string;
+      kind: "repo-snapshot";
+      branch: string;
+      comparison: RepoSnapshotComparison;
       description: string;
     };
 
@@ -460,17 +418,7 @@ function buildFooterNotes(staleness: PlanningStaleness | undefined): string[] {
 }
 
 function buildScopedPlanLine(scope: ResolvedScope, durationMs: number): string {
-  const scopeText =
-    scope.kind === "working-tree"
-      ? `working tree (${scope.trackedFiles.length} tracked, ${scope.untrackedFiles.length} untracked)`
-      : scope.kind === "branch-diff"
-        ? `branch diff vs ${scope.baseBranch} (${scope.diffFiles.length} files)`
-        : scope.kind === "commit"
-          ? `commit ${scope.sha}`
-          : scope.kind === "folder"
-            ? `snapshot for ${scope.paths.join(", ")}`
-            : "custom scope";
-  return `Converged plan for ${scopeText} in ${formatDuration(durationMs)}.`;
+  return `Converged plan for ${scope.description} in ${formatDuration(durationMs)}.`;
 }
 
 function buildFailureMarkdown(failedTasks: CandidateTaskResult[]): string {
@@ -500,8 +448,14 @@ function buildCandidateSummaryMarkdown(options: {
   totalCandidates: number;
   footerNotes?: string[];
 }): string {
-  const { scopeLine, goal, candidates, completedCandidates, totalCandidates, footerNotes = [] } =
-    options;
+  const {
+    scopeLine,
+    goal,
+    candidates,
+    completedCandidates,
+    totalCandidates,
+    footerNotes = [],
+  } = options;
   const runWord = totalCandidates === 1 ? "engineer run" : "engineer runs";
   const completionLine =
     completedCandidates === totalCandidates
@@ -596,12 +550,13 @@ function buildConvergenceMarkdown(options: {
     sections.push("", "## Open Questions", "", ...result.openQuestions.map((item) => `- ${item}`));
   }
 
-  sections.push("", "## Candidate Summaries", "", buildCandidateSummariesTable(candidates).trimEnd());
-  return appendMarkdownListSection(
-    sections.join("\n"),
-    CONVERGE_STALE_SECTION_TITLE,
-    footerNotes,
+  sections.push(
+    "",
+    "## Candidate Summaries",
+    "",
+    buildCandidateSummariesTable(candidates).trimEnd(),
   );
+  return appendMarkdownListSection(sections.join("\n"), CONVERGE_STALE_SECTION_TITLE, footerNotes);
 }
 
 function isHelpRequest(args: string | undefined): boolean {
@@ -611,13 +566,11 @@ function isHelpRequest(args: string | undefined): boolean {
   return first === "help";
 }
 
-function getArgumentCompletions(
-  prefix: string,
-): Array<{ value: string; label: string }> | null {
+function getArgumentCompletions(prefix: string): Array<{ value: string; label: string }> | null {
   const trimmed = prefix.trim().toLowerCase();
   if (trimmed.includes(" ")) return null;
 
-  const matches = CONVERGE_MODE_HINTS.filter((value) => value.startsWith(trimmed));
+  const matches = CONVERGE_ARGUMENT_HINTS.filter((value) => value.startsWith(trimmed));
   if (matches.length === 0) return null;
   return matches.map((value) => ({ value, label: value }));
 }
@@ -631,16 +584,12 @@ function showHelp(pi: ExtensionAPI) {
 Run multiple independent engineer planning passes, then synthesize one best plan/spec.
 
 ### Syntax
-- \`/converge [mode] [goal=<text>] [models=<a,b>] [context=<text>]\`
+- \`/converge [goal=<text>] [models=<a,b>] [context=<text>]\`
 
-### Modes
-- \`auto\` (default): working tree first, then branch diff vs base branch.
-- \`uncommitted\`: plan against tracked + untracked local changes.
-- \`branch <name>\`: plan against diff from merge-base(name)..HEAD.
-- \`commit <sha>\`: plan against one commit.
-- \`pr <number|url>\`: checkout PR branch and plan against the PR diff.
-- \`folder <paths...>\`: plan against the current snapshot of files/folders.
-- \`custom "<instructions>"\`: custom scoped planning instructions.
+### Scope
+- \`/converge\` always plans from the current repository snapshot.
+- If the working tree has local changes, those diffs are mandatory planning context.
+- If the working tree is clean, \`/converge\` still plans from the clean checkout and includes committed branch diff context vs the default branch when available.
 
 ### Goal Resolution
 - \`goal=<text>\`: explicit planning objective.
@@ -648,7 +597,8 @@ Run multiple independent engineer planning passes, then synthesize one best plan
 
 ### Options
 - \`models=<a,b>\`: run all engineer passes for each listed model.
-- \`context=<text>\`: add extra steering to every engineer pass and the final convergence step.
+- \`context=<text>\`: add short inline steering to every engineer pass and the final convergence step.
+- Long-form context: put \`context=\` last, then place a multi-line formatted block on the following lines.
 
 ### Engineer Lenses
 - \`architect\`: boundaries, interfaces, and long-term fit.
@@ -659,9 +609,17 @@ Run multiple independent engineer planning passes, then synthesize one best plan
 ### Examples
 - \`/converge\`
 - \`/converge goal="design auth migration plan"\`
-- \`/converge folder pi/extensions goal="add a new plan-convergence extension"\`
-- \`/converge branch main context="optimize for the smallest safe first slice"\`
-- \`/converge pr 123 models=sonnet,gpt-5\`
+- \`/converge context="optimize for the smallest safe first slice"\`
+- \`/converge goal="design a new plan-convergence extension" models=sonnet,gpt-5\`
+- Long-form context example:
+
+\`\`\`text
+/converge goal="design a new plan-convergence extension" models=gpt-5 context=
+## Constraints
+- Keep the first slice narrow
+- Preserve review-style orchestration
+- Prefer existing repo patterns over new abstractions
+\`\`\`
 
 ### Behavior
 - Runs engineer passes in parallel in the background.
@@ -691,16 +649,72 @@ function parseKeyValueOption(
   return (match[1] ?? match[2] ?? match[3] ?? "").trim();
 }
 
+function extractTrailingLongFormContext(raw: string): {
+  argsWithoutBlock: string;
+  blockContext?: string;
+} {
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+
+  for (let index = 0; index < raw.length; index += 1) {
+    const char = raw[index];
+    if (char === "'" && !inDoubleQuote) {
+      inSingleQuote = !inSingleQuote;
+      continue;
+    }
+    if (char === '"' && !inSingleQuote) {
+      inDoubleQuote = !inDoubleQuote;
+      continue;
+    }
+    if (inSingleQuote || inDoubleQuote) continue;
+
+    if (index > 0 && !/\s/.test(raw[index - 1] ?? "")) continue;
+    if (!raw.startsWith("context=", index)) continue;
+
+    let valueStart = index + "context=".length;
+    while (raw[valueStart] === " " || raw[valueStart] === "\t") {
+      valueStart += 1;
+    }
+
+    const nextChar = raw[valueStart];
+    if (nextChar !== "\n" && nextChar !== "\r") continue;
+
+    const newlineLength = nextChar === "\r" && raw[valueStart + 1] === "\n" ? 2 : 1;
+    const blockContext = raw.slice(valueStart + newlineLength);
+    return {
+      argsWithoutBlock: raw.slice(0, index).trimEnd(),
+      blockContext: blockContext.length > 0 ? blockContext : undefined,
+    };
+  }
+
+  return { argsWithoutBlock: raw };
+}
+
+function normalizeAdditionalContextChunk(value: string): string {
+  const normalized = value.replace(/\r\n/g, "\n");
+  if (!normalized.includes("\n")) return normalized.trim();
+
+  const lines = normalized.split("\n");
+  while (lines.length > 0 && lines[0]?.trim().length === 0) {
+    lines.shift();
+  }
+  while (lines.length > 0 && lines[lines.length - 1]?.trim().length === 0) {
+    lines.pop();
+  }
+  return lines.join("\n").trimEnd();
+}
+
 function parseRequestArgs(args: string | undefined): ParsedRequest {
   const raw = args?.trim() ?? "";
   if (!raw) {
-    return { target: { type: "auto" }, mode: "auto", models: [], rawArgs: raw };
+    return { models: [], rawArgs: raw };
   }
 
-  const tokens = tokenizeArgs(raw);
+  const { argsWithoutBlock, blockContext } = extractTrailingLongFormContext(raw);
+  const tokens = tokenizeArgs(argsWithoutBlock);
   const rawModels: string[] = [];
   const rawContext: string[] = [];
-  const modeTokens: string[] = [];
+  const positionalTokens: string[] = [];
   let goal: string | undefined;
 
   for (const token of tokens) {
@@ -726,104 +740,34 @@ function parseRequestArgs(args: string | undefined): ParsedRequest {
       continue;
     }
 
-    modeTokens.push(unquoteToken(token));
+    positionalTokens.push(unquoteToken(token));
+  }
+
+  if (positionalTokens.length > 0) {
+    const suffix = positionalTokens.length === 1 ? "" : "s";
+    throw new Error(
+      `Unexpected positional arg${suffix}: ${positionalTokens.join(", ")}. /converge no longer accepts modes or positional args; use goal=..., models=..., and/or context=....`,
+    );
+  }
+
+  if (blockContext !== undefined) {
+    rawContext.push(blockContext);
   }
 
   const models = Array.from(new Set(rawModels));
   const additionalContextJoined = rawContext
-    .map((c) => c.trim())
-    .filter(Boolean)
+    .map(normalizeAdditionalContextChunk)
+    .filter((value) => value.trim().length > 0)
     .join("\n\n");
   const additionalContext =
     additionalContextJoined.length > 0 ? additionalContextJoined : undefined;
 
-  const toMode = (target: PlanningTarget): PlanningRequestMode => {
-    switch (target.type) {
-      case "auto":
-        return "auto";
-      case "uncommitted":
-        return "uncommitted";
-      case "branch":
-        return `branch:${target.branch}`;
-      case "commit":
-        return `commit:${target.sha}`;
-      case "pr":
-        return `pr:${target.ref}`;
-      case "folder":
-        return `folder:${target.paths.join(",")}`;
-      case "custom":
-        return "custom";
-    }
-  };
-
-  const withMeta = (target: PlanningTarget): ParsedRequest => ({
-    target,
-    mode: toMode(target),
+  return {
     models,
     rawArgs: raw,
     goal,
     additionalContext,
-  });
-
-  if (modeTokens.length === 0) {
-    return withMeta({ type: "auto" });
-  }
-
-  const mode = modeTokens[0].toLowerCase();
-  const rest = modeTokens.slice(1);
-
-  if (mode === "auto" || mode === "uncommitted") {
-    if (rest.length > 0) {
-      throw new Error(
-        `${mode} mode does not accept positional args. Use goal=..., models=..., and/or context=...`,
-      );
-    }
-    return withMeta({ type: mode });
-  }
-
-  if (mode === "branch" || mode === "commit" || mode === "pr") {
-    if (!rest[0]) {
-      if (mode === "branch") {
-        throw new Error("branch mode requires a branch name (e.g. /converge branch main)");
-      }
-      if (mode === "commit") {
-        throw new Error("commit mode requires a commit SHA (e.g. /converge commit abc1234)");
-      }
-      throw new Error("pr mode requires a PR number or URL (e.g. /converge pr 123)");
-    }
-    if (rest.length > 1) {
-      const valueLabel =
-        mode === "branch" ? "branch name" : mode === "commit" ? "SHA" : "reference";
-      throw new Error(
-        `${mode} mode accepts one ${valueLabel}. Use goal=..., models=..., and/or context=... for options.`,
-      );
-    }
-
-    if (mode === "branch") return withMeta({ type: "branch", branch: rest[0] });
-    if (mode === "commit") return withMeta({ type: "commit", sha: rest[0] });
-    return withMeta({ type: "pr", ref: rest[0] });
-  }
-
-  if (mode === "folder") {
-    if (rest.length === 0) {
-      throw new Error("folder mode requires at least one path (e.g. /converge folder src docs)");
-    }
-    return withMeta({ type: "folder", paths: rest.map((p) => p.trim()).filter(Boolean) });
-  }
-
-  if (mode === "custom") {
-    const instructions = rest.join(" ").trim();
-    if (!instructions) {
-      throw new Error(
-        'custom mode requires instructions (e.g. /converge custom "focus on auth migration")',
-      );
-    }
-    return withMeta({ type: "custom", instructions });
-  }
-
-  throw new Error(
-    `Unknown mode "${mode}". Supported modes: auto, uncommitted, branch, commit, pr, folder, custom.`,
-  );
+  };
 }
 
 function parseCommandRequest(
@@ -938,68 +882,13 @@ async function getDiffFilesInRange(pi: ExtensionAPI, range: string): Promise<str
   return parseGitFileList(stdout);
 }
 
-async function hasPendingTrackedChanges(pi: ExtensionAPI): Promise<boolean> {
-  const { stdout, code } = await runGit(pi, ["status", "--porcelain"]);
-  if (code !== 0) return false;
-  const lines = stdout.split("\n").filter((line) => line.length > 0);
-  return lines.some((line) => !line.startsWith("??"));
-}
-
-function parsePrReference(ref: string): number | null {
-  const trimmed = ref.trim();
-  if (/^\d+$/.test(trimmed)) return Number.parseInt(trimmed, 10);
-
-  const urlMatch = trimmed.match(/github\.com\/[^/]+\/[^/]+\/pull\/(\d+)/i);
-  if (!urlMatch?.[1]) return null;
-  return Number.parseInt(urlMatch[1], 10);
-}
-
-async function getPrInfo(
-  pi: ExtensionAPI,
-  prNumber: number,
-): Promise<{ baseBranch: string; headBranch: string } | null> {
-  const { stdout, code } = await pi.exec("gh", [
-    "pr",
-    "view",
-    String(prNumber),
-    "--json",
-    "baseRefName,headRefName",
-  ]);
-  if (code !== 0) return null;
-  try {
-    const data = JSON.parse(stdout);
-    if (typeof data?.baseRefName === "string" && typeof data?.headRefName === "string") {
-      return {
-        baseBranch: data.baseRefName,
-        headBranch: data.headRefName,
-      };
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-async function checkoutPr(
-  pi: ExtensionAPI,
-  prNumber: number,
-): Promise<{ ok: boolean; error?: string }> {
-  const { stdout, stderr, code } = await pi.exec("gh", ["pr", "checkout", String(prNumber)]);
-  if (code !== 0) {
-    return { ok: false, error: (stderr || stdout || "Failed to checkout PR").trim() };
-  }
-  return { ok: true };
-}
-
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
 }
 
 function getStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
-  return value
-    .map((item) => (typeof item === "string" ? item.trim() : ""))
-    .filter(Boolean);
+  return value.map((item) => (typeof item === "string" ? item.trim() : "")).filter(Boolean);
 }
 
 function getLastUserGoal(ctx: ExtensionContext): string | null {
@@ -1145,155 +1034,65 @@ function fingerprintsEqual(a: PlanningFingerprint, b: PlanningFingerprint): bool
   );
 }
 
-type BranchDiffScopeOptions = {
-  baseBranch: string;
-  description: (diffFileCount: number) => string;
-  mergeBaseError: string;
-  emptyDiffError: string;
-};
-
-async function resolveBranchDiffScope(
+async function resolveRepoSnapshotComparison(
   pi: ExtensionAPI,
-  options: BranchDiffScopeOptions,
-): Promise<{ scope?: ResolvedScope; error?: string }> {
-  const mergeBase = await getMergeBase(pi, options.baseBranch);
+  baseBranch: string,
+): Promise<RepoSnapshotComparison> {
+  const mergeBase = await getMergeBase(pi, baseBranch);
   if (!mergeBase) {
-    return { error: options.mergeBaseError };
-  }
-
-  const range = `${mergeBase}..HEAD`;
-  const diffFiles = await getDiffFilesInRange(pi, range);
-  if (diffFiles.length === 0) {
-    return { error: options.emptyDiffError };
+    return { baseBranch, mergeBase: null, diffFiles: [] };
   }
 
   return {
-    scope: {
-      kind: "branch-diff",
-      baseBranch: options.baseBranch,
-      mergeBase,
-      diffFiles,
-      description: options.description(diffFiles.length),
-    },
+    baseBranch,
+    mergeBase,
+    diffFiles: await getDiffFilesInRange(pi, `${mergeBase}..HEAD`),
   };
 }
 
-async function resolveScope(
-  pi: ExtensionAPI,
-  ctx: ExtensionContext,
-  target: PlanningTarget,
-): Promise<{ scope?: ResolvedScope; error?: string }> {
-  switch (target.type) {
-    case "auto":
-    case "uncommitted": {
-      const untrackedPromise = getUntrackedFiles(pi);
-      const headSha = await resolveHeadSha(pi);
-      const hasHead = headSha !== null;
-      const [trackedFiles, untrackedFiles] = await Promise.all([
-        getTrackedChangedFiles(pi, hasHead),
-        untrackedPromise,
-      ]);
-      if (trackedFiles.length > 0 || untrackedFiles.length > 0) {
-        return {
-          scope: {
-            kind: "working-tree",
-            trackedFiles,
-            untrackedFiles,
-            hasHead,
-            description: `working tree (tracked: ${trackedFiles.length}, untracked: ${untrackedFiles.length})`,
-          },
-        };
-      }
-
-      if (target.type === "uncommitted") {
-        return { error: "No uncommitted changes to plan against." };
-      }
-
-      const baseBranch = await getDefaultBranch(pi);
-      return resolveBranchDiffScope(pi, {
-        baseBranch,
-        description: (diffFileCount) => `branch diff vs ${baseBranch} (${diffFileCount} files)`,
-        mergeBaseError: `Could not determine merge-base against ${baseBranch}`,
-        emptyDiffError: `No planning scope found (clean working tree and no branch diff vs ${baseBranch}). Use an explicit mode (branch/commit/pr/folder/custom).`,
-      });
-    }
-    case "branch": {
-      return resolveBranchDiffScope(pi, {
-        baseBranch: target.branch,
-        description: (diffFileCount) => `branch diff vs ${target.branch} (${diffFileCount} files)`,
-        mergeBaseError: `Could not determine merge-base against ${target.branch}`,
-        emptyDiffError: `No differences found against branch ${target.branch}.`,
-      });
-    }
-    case "commit": {
-      return {
-        scope: {
-          kind: "commit",
-          sha: target.sha,
-          description: `commit ${target.sha}`,
-        },
-      };
-    }
-    case "pr": {
-      if (await hasPendingTrackedChanges(pi)) {
-        return { error: "Cannot checkout PR with pending tracked changes. Commit or stash first." };
-      }
-
-      const prNumber = parsePrReference(target.ref);
-      if (!prNumber) {
-        return { error: `Invalid PR reference: ${target.ref}` };
-      }
-
-      notify(ctx, `Fetching PR #${prNumber} information...`, "info");
-      const prInfo = await getPrInfo(pi, prNumber);
-      if (!prInfo) {
-        return {
-          error: `Could not load PR #${prNumber}. Ensure gh is authenticated and PR exists.`,
-        };
-      }
-
-      if (await hasPendingTrackedChanges(pi)) {
-        return { error: "Cannot checkout PR with pending tracked changes. Commit or stash first." };
-      }
-
-      notify(ctx, `Checking out PR #${prNumber}...`, "info");
-      const checkout = await checkoutPr(pi, prNumber);
-      if (!checkout.ok) {
-        return {
-          error: `Failed to checkout PR #${prNumber}: ${checkout.error ?? "unknown error"}`,
-        };
-      }
-      notify(ctx, `Checked out PR #${prNumber} (${prInfo.headBranch}).`, "info");
-
-      return resolveBranchDiffScope(pi, {
-        baseBranch: prInfo.baseBranch,
-        description: (diffFileCount) =>
-          `PR #${prNumber} diff vs ${prInfo.baseBranch} (${diffFileCount} files)`,
-        mergeBaseError: `Could not determine merge-base against PR base branch ${prInfo.baseBranch}.`,
-        emptyDiffError: `No differences found for PR #${prNumber} against ${prInfo.baseBranch}.`,
-      });
-    }
-    case "folder": {
-      if (target.paths.length === 0) return { error: "No folder/file paths provided." };
-      return {
-        scope: {
-          kind: "folder",
-          paths: target.paths,
-          description: `snapshot planning for ${target.paths.join(", ")}`,
-        },
-      };
-    }
-    case "custom": {
-      if (!target.instructions.trim()) return { error: "Custom instructions are empty." };
-      return {
-        scope: {
-          kind: "custom",
-          instructions: target.instructions.trim(),
-          description: "custom planning instructions",
-        },
-      };
-    }
+function describeRepoSnapshotScope(branch: string, comparison: RepoSnapshotComparison): string {
+  if (!comparison.mergeBase) {
+    return `repo snapshot on ${branch} (clean; no merge-base vs ${comparison.baseBranch})`;
   }
+  if (comparison.diffFiles.length === 0) {
+    return `repo snapshot on ${branch} (clean; no committed diff vs ${comparison.baseBranch})`;
+  }
+  return `repo snapshot on ${branch} (clean; ${comparison.diffFiles.length} committed files vs ${comparison.baseBranch})`;
+}
+
+async function resolveScope(pi: ExtensionAPI): Promise<{ scope?: ResolvedScope; error?: string }> {
+  const untrackedPromise = getUntrackedFiles(pi);
+  const headSha = await resolveHeadSha(pi);
+  const hasHead = headSha !== null;
+  const [trackedFiles, untrackedFiles] = await Promise.all([
+    getTrackedChangedFiles(pi, hasHead),
+    untrackedPromise,
+  ]);
+  if (trackedFiles.length > 0 || untrackedFiles.length > 0) {
+    return {
+      scope: {
+        kind: "working-tree",
+        trackedFiles,
+        untrackedFiles,
+        hasHead,
+        description: `working tree (tracked: ${trackedFiles.length}, untracked: ${untrackedFiles.length})`,
+      },
+    };
+  }
+
+  const [baseBranch, currentBranch] = await Promise.all([
+    getDefaultBranch(pi),
+    getCurrentBranch(pi).then((branch) => branch ?? "detached HEAD"),
+  ]);
+  const comparison = await resolveRepoSnapshotComparison(pi, baseBranch);
+  return {
+    scope: {
+      kind: "repo-snapshot",
+      branch: currentBranch,
+      comparison,
+      description: describeRepoSnapshotScope(currentBranch, comparison),
+    },
+  };
 }
 
 function buildScopeInstructions(scope: ResolvedScope): string {
@@ -1312,21 +1111,29 @@ function buildScopeInstructions(scope: ResolvedScope): string {
           : "- There are no untracked files.";
       return `Scope: working tree planning.\n${tracked}\n${untracked}`;
     }
-    case "branch-diff": {
-      return `Scope: branch diff planning against base branch ${scope.baseBranch}.\n- Merge base: ${scope.mergeBase}\n- First capture the full diff with: \`git diff ${scope.mergeBase}..HEAD\` (treat this diff as mandatory planning context).\n- Files in diff (${scope.diffFiles.length}):\n${scope.diffFiles.map((f) => `  - ${f}`).join("\n")}`;
-    }
-    case "commit": {
-      return `Scope: commit planning for ${scope.sha}.\n- First capture the full commit patch with: \`git show --stat --patch ${scope.sha}\` (treat this patch as mandatory planning context).\n- Focus only on changes introduced by this commit.`;
-    }
-    case "folder": {
-      return `Scope: snapshot planning of selected paths (not a diff).\n- Paths:\n${scope.paths
-        .map((p) => `  - ${p}`)
-        .join("\n")}\n- Read files directly from these paths and plan against what exists currently.`;
-    }
-    case "custom": {
-      return `Scope: custom planning instructions.\n- Additional user instruction: ${scope.instructions}`;
+    case "repo-snapshot": {
+      const { comparison } = scope;
+      const header = `Scope: current repository snapshot planning.\n- The authoritative code state is the current checkout on ${scope.branch}. Inspect relevant files directly; do not require a diff to define the plan.\n- The working tree is clean.`;
+      if (!comparison.mergeBase) {
+        return `${header}\n- Default-branch comparison against ${comparison.baseBranch} is unavailable because no merge-base could be determined. Use direct repo inspection only.`;
+      }
+      if (comparison.diffFiles.length === 0) {
+        return `${header}\n- There is no committed branch diff vs ${comparison.baseBranch}. Plan from the current repo snapshot directly.`;
+      }
+      return `${header}\n- There are already committed changes on this branch relative to ${comparison.baseBranch}. Inspect them with: \`git diff ${comparison.mergeBase}..HEAD\` to understand branch-specific context, but treat the current repo snapshot as the primary planning context.\n- Committed diff files (${comparison.diffFiles.length}):\n${comparison.diffFiles.map((f) => `  - ${f}`).join("\n")}`;
     }
   }
+}
+
+function buildAdditionalContextSection(additionalContext: string | undefined): string {
+  const normalized = additionalContext?.trimEnd();
+  if (!normalized || normalized.trim().length === 0) return "";
+  return `Additional context from user:
+<<<USER_CONTEXT
+${normalized}
+USER_CONTEXT
+
+`;
 }
 
 function buildCandidatePrompt(
@@ -1337,9 +1144,7 @@ function buildCandidatePrompt(
   additionalContext: string | undefined,
 ): string {
   const engineerDef = PLAN_ENGINEERS[engineer];
-  const additionalContextSection = additionalContext?.trim()
-    ? `Additional context from user:\n${additionalContext.trim()}\n\n`
-    : "";
+  const additionalContextSection = buildAdditionalContextSection(additionalContext);
   const projectGuidelinesSection = projectGuidelines
     ? `Project-specific planning guidelines:\n${projectGuidelines}\n\n`
     : "";
@@ -1379,9 +1184,7 @@ function buildConvergencePrompt(options: {
   additionalContext?: string;
 }): string {
   const { goal, scope, candidates, projectGuidelines, additionalContext } = options;
-  const additionalContextSection = additionalContext?.trim()
-    ? `Additional context from user:\n${additionalContext.trim()}\n\n`
-    : "";
+  const additionalContextSection = buildAdditionalContextSection(additionalContext);
   const projectGuidelinesSection = projectGuidelines
     ? `Project-specific planning guidelines:\n${projectGuidelines}\n\n`
     : "";
@@ -1489,8 +1292,7 @@ function validatePlanSteps(value: unknown, label: string): PlanStep[] {
     if (!record) continue;
     const title = typeof record.title === "string" ? record.title.trim() : "";
     const rationale = typeof record.rationale === "string" ? record.rationale.trim() : "";
-    const verification =
-      typeof record.verification === "string" ? record.verification.trim() : "";
+    const verification = typeof record.verification === "string" ? record.verification.trim() : "";
     if (!title || !rationale || !verification) continue;
     steps.push({ title, rationale, verification });
   }
@@ -1542,8 +1344,7 @@ function validateConvergedPlanSteps(value: unknown): ConvergedPlanStep[] {
     if (!record) continue;
     const title = typeof record.title === "string" ? record.title.trim() : "";
     const rationale = typeof record.rationale === "string" ? record.rationale.trim() : "";
-    const verification =
-      typeof record.verification === "string" ? record.verification.trim() : "";
+    const verification = typeof record.verification === "string" ? record.verification.trim() : "";
     const sources = getUniqueStrings(getStringArray(record.sources));
     if (!title || !rationale || !verification) continue;
     steps.push({ title, rationale, verification, sources });
@@ -2081,7 +1882,9 @@ async function resolveModels(
   const currentModelId = ctx.model?.id;
   const availableModels = ctx.modelRegistry.getAvailable();
 
-  const resolveRequestedModel = (modelPattern: string): { modelArg: string; modelLabel: string } => {
+  const resolveRequestedModel = (
+    modelPattern: string,
+  ): { modelArg: string; modelLabel: string } => {
     const slash = modelPattern.indexOf("/");
     const explicitProvider = slash > 0 ? modelPattern.slice(0, slash).trim() : "";
     if (explicitProvider) {
@@ -2175,13 +1978,13 @@ async function prepareConvergeRun(
     return { ok: false, error: goalResult.error };
   }
 
-  const resolved = await resolveScope(pi, ctx, request.target);
+  const resolved = await resolveScope(pi);
   if (!resolved.scope) {
     return { ok: false, error: resolved.error ?? "Failed to resolve planning scope." };
   }
 
   const scope = resolved.scope;
-  const includeUntracked = scope.kind === "working-tree" || scope.kind === "folder";
+  const includeUntracked = true;
   const scopeUntrackedFiles = scope.kind === "working-tree" ? scope.untrackedFiles : undefined;
   const [baselineFingerprint, guidelines, models] = await Promise.all([
     computeCurrentFingerprint(pi, ctx.cwd, includeUntracked, scopeUntrackedFiles),
@@ -2374,7 +2177,11 @@ async function runConvergePipeline(
     }
 
     const guidelines = await loadProjectPlanningGuidelines(ctx.cwd);
-    const preConvergenceFingerprint = await computeCurrentFingerprint(pi, ctx.cwd, includeUntracked);
+    const preConvergenceFingerprint = await computeCurrentFingerprint(
+      pi,
+      ctx.cwd,
+      includeUntracked,
+    );
     let staleness: PlanningStaleness | undefined;
     if (!fingerprintsEqual(baselineFingerprint, preConvergenceFingerprint)) {
       staleness = buildStaleness();
@@ -2448,7 +2255,6 @@ async function runConvergePipeline(
     const details: ConvergeMessageDetails = {
       generatedAt: new Date().toISOString(),
       request: {
-        mode: request.mode,
         goalSource,
         models: request.models,
         rawArgs: request.rawArgs,
@@ -2564,10 +2370,7 @@ export default function convergeExtension(pi: ExtensionAPI) {
       const request = parseCommandRequest(pi, args, ctx);
       if (!request) return;
 
-      const sessionKey = acquireRunLock(
-        ctx,
-        "A /converge run is already active in this session.",
-      );
+      const sessionKey = acquireRunLock(ctx, "A /converge run is already active in this session.");
       if (!sessionKey) return;
 
       notify(ctx, "Starting plan convergence in background...", "info");
