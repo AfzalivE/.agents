@@ -44,6 +44,19 @@ function parseFastSetting(value: string): FastSetting | undefined {
   return undefined;
 }
 
+function getFastArgumentCompletions(
+  prefix: string,
+): Array<{ value: string; label: string }> | null {
+  const trimmed = prefix.trim().toLowerCase();
+  if (trimmed.includes(" ")) return null;
+
+  const options = ["on", "off", "enabled", "disabled"];
+  const matches = options.filter((option) => option.startsWith(trimmed));
+  if (!matches.length) return null;
+
+  return matches.map((option) => ({ value: option, label: option }));
+}
+
 function parseConfig(value: unknown): FastConfig {
   if (!isObject(value) || !isObject(value.models)) return emptyConfig();
 
@@ -169,6 +182,7 @@ export default function openaiFastExtension(pi: ExtensionAPI): void {
 
   pi.registerCommand("fast", {
     description: "Toggle priority service tier for the current OpenAI model",
+    getArgumentCompletions: getFastArgumentCompletions,
     handler: async (args, ctx) => {
       const arg = args.trim();
       if (arg === "") {
