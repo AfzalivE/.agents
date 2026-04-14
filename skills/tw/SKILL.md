@@ -1,9 +1,11 @@
 ---
 name: tw
-description: "Twist CLI for team messaging — threads, DMs, channels, inbox, search, and reactions. Use when reading or responding to Twist messages."
+description: "Twist CLI for team messaging — threads, conversations, messages, comments, search, reactions, and workspace navigation. Use when reading or responding to Twist messages."
 ---
 
 # Twist CLI (`tw`)
+
+Validated against CLI version: `2.27.0`
 
 ## Global Flags
 
@@ -13,8 +15,11 @@ description: "Twist CLI for team messaging — threads, DMs, channels, inbox, se
 | `--ndjson` | Output as newline-delimited JSON |
 | `--full` | Include all fields in JSON output (default shows essential fields) |
 | `--no-spinner` | Suppress loading animations |
-| `--include-private-channels` | Include private channels in output |
+| `--include-private-channels` | Include joined private channels when a command supports them |
 | `--progress-jsonl [path]` | Emit progress events as JSONL to stderr or file |
+| `--accessible` | Add text labels to color-coded output |
+| `--non-interactive` | Disable prompts/editor flows |
+| `--interactive` | Force interactive mode |
 
 Always use `--json` or `--ndjson` for programmatic parsing.
 
@@ -24,112 +29,124 @@ Always use `--json` or `--ndjson` for programmatic parsing.
 |------|---------|
 | Check inbox | `tw inbox` |
 | Unread inbox | `tw inbox --unread` |
-| Unread DMs | `tw msg unread` |
+| Unread DMs/groups | `tw conversation unread` |
 | Read a thread | `tw thread view <ref>` |
-| Reply to thread | `tw thread reply <ref> "text"` |
-| Read a DM | `tw msg view <ref>` |
-| Reply to DM | `tw msg reply <ref> "text"` |
+| Reply to a thread | `tw thread reply <ref> "text"` |
+| Create a thread | `tw thread create <channel-ref> "Title" "Body"` |
+| Read a DM/group | `tw conversation view <ref>` |
+| Reply in a DM/group | `tw conversation reply <ref> "text"` |
+| Find 1:1 with a user | `tw conversation with <user-ref>` |
 | Search | `tw search "query"` |
-| React | `tw react thread <ref> :emoji:` |
+| React | `tw react thread <ref> +1` |
+| View by URL | `tw view <url>` |
 
-## Workspace & Users
+## Workspace & Directory
 
-```
-tw workspaces                         # List all workspaces
-tw workspace use <ref>                # Set current workspace
-tw user                               # Show current user info
-tw users [workspace] [--search text]  # List users (fuzzy filter)
-tw channels [workspace]               # List channels
+```bash
+tw workspaces
+tw workspace use <ref>
+tw user
+tw users [workspace] [--search text]
+tw groups [workspace] [--search text]
+tw channels [workspace] [--scope joined|public|discoverable] [--state active|all|archived]
 ```
 
 ## Inbox
 
-```
+```bash
 tw inbox [workspace] [options]
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--unread` | Only unread threads |
+| `--workspace <ref>` | Workspace ID or name |
 | `--channel <filter>` | Fuzzy match channel name |
+| `--unread` | Only unread threads |
 | `--since <date>` | ISO date lower bound |
 | `--until <date>` | ISO date upper bound |
 | `--limit <n>` | Max items (default: 50) |
 
-## Threads
+## Threads (`tw thread`)
 
 ### View
 
-```
+```bash
 tw thread view <thread-ref> [options]
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--unread` | Only unread comments (with original post for context) |
-| `--context <n>` | Include N read comments before unread (use with `--unread`) |
 | `--comment <id>` | Show only a specific comment |
+| `--unread` | Only unread comments, with original post for context |
+| `--context <n>` | Include N read comments before unread |
 | `--limit <n>` | Max comments (default: 50) |
 | `--since <date>` | Comments newer than |
 | `--until <date>` | Comments older than |
 | `--raw` | Raw markdown instead of rendered |
 
-### Reply
+### Reply / Create
 
-```
+```bash
 tw thread reply <thread-ref> [content] [options]
+tw thread create <channel-ref> <title> [content] [options]
 ```
 
-| Option | Description |
-|--------|-------------|
-| `--notify <recipients>` | `EVERYONE`, `EVERYONE_IN_THREAD`, or comma-separated user IDs (default: `EVERYONE_IN_THREAD`) |
-| `--dry-run` | Preview without posting |
+- `reply`: `--notify <recipients>`, `--close`, `--reopen`, `--dry-run`
+- `create`: `--notify <recipients>`, `--dry-run`
+- Both accept content from stdin.
 
-### Archive
+### Manage
 
-```
-tw thread done <thread-ref>
-```
-
-## Direct Messages / Group Conversations
-
-### Unread
-
-```
-tw msg unread [workspace]
+```bash
+tw thread done <thread-ref> [--dry-run]
+tw thread delete <thread-ref> [--yes] [--dry-run]
+tw thread mute <thread-ref> [--minutes <n>] [--dry-run]
+tw thread unmute <thread-ref> [--dry-run]
+tw thread rename <thread-ref> <title> [--dry-run]
 ```
 
-### View
+## Conversations (`tw conversation` / `tw convo`)
 
+Use `conversation` for DMs and group conversations. `msg` is only for single-message view/edit/delete.
+
+```bash
+tw conversation unread [workspace]
+tw conversation view <conversation-ref> [--limit <n>] [--since <date>] [--until <date>] [--raw]
+tw conversation with <user-ref> [workspace] [--include-groups] [--snippet]
+tw conversation reply <conversation-ref> [content] [--dry-run]
+tw conversation done <conversation-ref> [--dry-run]
+tw conversation mute <conversation-ref> [--minutes <n>] [--dry-run]
+tw conversation unmute <conversation-ref> [--dry-run]
 ```
-tw msg view <conversation-ref> [options]
+
+## Messages (`tw msg` / `tw message`)
+
+```bash
+tw msg view <message-ref> [--raw]
+tw msg update <message-ref> [content] [--dry-run]
+tw msg delete <message-ref> [--dry-run]
 ```
 
-Options: `--limit`, `--since`, `--until`, `--raw`, `--json`, `--ndjson`, `--full`.
+## Comments (`tw comment`)
 
-### Reply
-
-```
-tw msg reply <conversation-ref> [content] [--dry-run]
-```
-
-### Archive
-
-```
-tw msg done <conversation-ref>
+```bash
+tw comment view <comment-ref> [--raw]
+tw comment update <comment-ref> [content] [--dry-run]
+tw comment delete <comment-ref> [--dry-run]
 ```
 
 ## Search
 
-```
+```bash
 tw search <query> [workspace] [options]
 ```
 
 | Option | Description |
 |--------|-------------|
+| `--workspace <ref>` | Workspace ID or name |
 | `--type <type>` | `threads`, `messages`, or `all` |
-| `--channel <refs>` | Filter by channels (comma-separated IDs) |
-| `--author <refs>` | Filter by author (comma-separated IDs) |
+| `--channel <refs>` | Filter by channels (comma-separated refs) |
+| `--author <refs>` | Filter by author (comma-separated refs) |
 | `--to <refs>` | Messages sent to user |
 | `--title-only` | Search thread titles only |
 | `--conversation <refs>` | Limit to specific conversations |
@@ -141,23 +158,39 @@ tw search <query> [workspace] [options]
 
 ## Reactions
 
-```
+```bash
 tw react <target-type> <target-ref> <emoji> [--dry-run]
 tw unreact <target-type> <target-ref> <emoji> [--dry-run]
 ```
 
 Target types: `thread`, `comment`, `message`.
 
-## Agent Skills
+## Away Status
 
+```bash
+tw away
+tw away set <type> [until] [--from YYYY-MM-DD] [--dry-run]
+tw away clear [--dry-run]
 ```
-tw skill list              # List available agents and install status
-tw skill install <agent>   # Install an agent skill
-tw skill uninstall <agent> # Uninstall an agent skill
-```
+
+Away types: `vacation`, `parental`, `sickleave`, `other`.
+
+## Other Useful Commands
+
+| Command | Purpose |
+|---------|---------|
+| `tw auth login|token|status|logout` | Authentication |
+| `tw view <url>` | Route any Twist URL to the right viewer |
+| `tw doctor [--json] [--offline]` | Diagnose CLI/environment problems |
+| `tw changelog [-n 10]` | Show recent CLI releases |
+| `tw update --check` / `tw update switch` | Check or change CLI update channel |
+| `tw skill list/install/update/uninstall` | Agent skill integrations |
+| `tw completion install zsh` | Install shell completions |
 
 ## Tips
 
-- Use `--dry-run` on `thread reply`, `msg reply`, `react`, and `unreact` to preview before sending.
-- Thread and comment refs can typically be IDs or URLs.
-- Date filters use ISO format (e.g., `2025-01-15`).
+- Use `--dry-run` on mutating commands when available.
+- `tw channels` defaults to active joined channels; use `--scope`/`--state` to widen, and `--include-private-channels` for joined private channels.
+- `tw conversation` replaces the old DM/group workflow; `tw msg` and `tw comment` are single-entity operations.
+- Refs can usually be IDs or Twist URLs.
+- Date filters use ISO format (for example `2025-01-15`).
