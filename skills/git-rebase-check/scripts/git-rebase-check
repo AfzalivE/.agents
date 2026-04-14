@@ -1,0 +1,177 @@
+#!/bin/bash
+# git-rebase-check — Verify a rebase preserved all changes
+#
+# Compares the cumulative diff of a local ref against a remote ref
+# to ensure no commits were lost or altered during a rebase.
+
+set -e
+
+function show_help() {
+    cat <<'EOF'
+Usage:
+  git-rebase-check [options]
+
+Options:
+  --local-ref <ref>            Local ref to check.
+                               Default: current branch.
+  --branch <ref>               Alias for --local-ref.
+  --remote-ref <ref>           Remote ref or commit to compare against.
+                               Default: upstream of the local ref.
+  --remote-branch <ref>        Alias for --remote-ref.
+  --remote-base <ref>          Remote merge-base override.
+                               Default: merge-base of origin/main and the remote ref.
+  --local-base <ref>           Local merge-base override.
+                               Default: origin/main.
+  -h, --help                   Show this help text.
+
+Exit codes:
+  0  No differences; rebase looks clean.
+  1  Differences found, invalid arguments, or missing upstream when no remote ref override is given.
+
+Examples:
+  git-rebase-check
+  git-rebase-check --local-ref my-feature
+  git-rebase-check --local-ref my-feature --remote-ref origin/main
+  git-rebase-check --local-ref my-feature --remote-ref abc1234
+  git-rebase-check --local-ref my-feature --local-base origin/main --remote-base origin/my-feature
+EOF
+}
+
+function format_branch_ref() {
+    local ref="$1"
+    local sha
+    sha="$(git rev-parse --short "$ref")"
+    echo "$ref ($sha)"
+}
+
+function is_named_ref() {
+    local ref="$1"
+
+    git show-ref --verify --quiet "refs/heads/$ref" ||
+        git show-ref --verify --quiet "refs/remotes/$ref" ||
+        git show-ref --verify --quiet "refs/tags/$ref" ||
+        git show-ref --verify --quiet "$ref"
+}
+
+function format_remote_ref() {
+    local ref="$1"
+    local sha
+    local subject
+
+    sha="$(git rev-parse --short "$ref")"
+
+    if is_named_ref "$ref"; then
+        echo "$ref ($sha)"
+        return
+    fi
+
+    subject="$(git log -1 --format=%s "$ref")"
+    echo "$ref ($sha) $subject"
+}
+
+function show_matching_ref_warning() {
+    local local_sha="$1"
+    local remote_sha="$2"
+
+    if [ "$local_sha" = "$remote_sha" ]; then
+        echo "⚠ Warning: local and remote refs point to the same commit."
+    fi
+}
+
+branch="$(git branch --show-current)"
+remote_branch=""
+remote_base=""
+local_base="origin/main"
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --local-ref|--branch)
+            if [ -z "${2:-}" ]; then
+                echo "error: $1 requires a value" >&2
+                exit 1
+            fi
+            branch="$2"
+            shift 2
+            ;;
+        --remote-base)
+            if [ -z "${2:-}" ]; then
+                echo "error: --remote-base requires a value" >&2
+                exit 1
+            fi
+            remote_base="$2"
+            shift 2
+            ;;
+        --remote-ref|--remote-branch)
+            if [ -z "${2:-}" ]; then
+                echo "error: $1 requires a value" >&2
+                exit 1
+            fi
+            remote_branch="$2"
+            shift 2
+            ;;
+        --local-base)
+            if [ -z "${2:-}" ]; then
+                echo "error: --local-base requires a value" >&2
+                exit 1
+            fi
+            local_base="$2"
+            shift 2
+            ;;
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        *)
+            echo "error: unknown option: $1" >&2
+            echo "" >&2
+            show_help >&2
+            exit 1
+            ;;
+    esac
+done
+
+if [ -z "$branch" ]; then
+    echo "error: could not determine current branch; use --local-ref" >&2
+    exit 1
+fi
+
+if [ -z "$remote_branch" ]; then
+    remote_branch="$(git for-each-ref --format='%(upstream:short)' "refs/heads/$branch")"
+    if [ -z "$remote_branch" ]; then
+        echo "error: no tracking branch for '$branch'; use --remote-ref" >&2
+        exit 1
+    fi
+fi
+
+if [ -z "$local_base" ]; then
+    local_base="$(git merge-base origin/main "$branch")"
+fi
+
+if [ -z "$remote_base" ]; then
+    remote_base="$(git merge-base origin/main "$remote_branch")"
+fi
+
+local_branch_sha="$(git rev-parse --short "$branch")"
+remote_branch_sha="$(git rev-parse --short "$remote_branch")"
+
+result="$(diff <(git diff "$local_base".."$branch") <(git diff "$remote_base".."$remote_branch"))" || true
+
+if [ -z "$result" ]; then
+    echo "Local ref:     $(format_branch_ref "$branch")"
+    echo "Local base:    $(git log --oneline -1 "$local_base")"
+    echo "Remote ref:    $(format_remote_ref "$remote_branch")"
+    echo "Remote base:   $(git log --oneline -1 "$remote_base")"
+    echo ""
+    echo "✓ No differences found — rebase looks clean."
+    show_matching_ref_warning "$local_branch_sha" "$remote_branch_sha"
+else
+    echo "$result"
+    echo ""
+    echo "✗ Differences found:"
+    echo "Local ref:     $(format_branch_ref "$branch")"
+    echo "Local base:    $(git log --oneline -1 "$local_base")"
+    echo "Remote ref:    $(format_remote_ref "$remote_branch")"
+    echo "Remote base:   $(git log --oneline -1 "$remote_base")"
+    show_matching_ref_warning "$local_branch_sha" "$remote_branch_sha"
+    exit 1
+fi
