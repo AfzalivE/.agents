@@ -56,8 +56,6 @@ By default it sets up all agents. Pass `--codex`, `--claude`, and/or `--pi` to l
 
 ## Pi Extensions
 
-## Pi Extensions
-
 | Extension | Command / Shortcut | Description |
 |-----------|--------------------|-------------|
 | answer | `/answer` | Extract and interactively answer agent questions |
