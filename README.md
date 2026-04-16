@@ -98,7 +98,7 @@ agent-brain/
   Preferences.md        Your workflow and code style preferences
   Conventions.md        Git, code, and vault conventions
   Environment.md        Machine setup, key paths, repo structure
-  Tools & Skills.md     User-specific tool context (accounts, orgs, API keys)
+  Tools & Skills.md     User-specific tool context (accounts, orgs, quirks)
   Projects MOC.md       Project notes, architecture, key decisions
   Patterns.md           Proven coding patterns and idioms
   Troubleshooting.md    Debugging insights and recurring fixes
