@@ -39,10 +39,6 @@ function isPullRequestStateCommand(command: string): boolean {
   return GH_PR_STATE_COMMAND_PATTERN.test(command);
 }
 
-function createHyperlink(url: string, text: string): string {
-  return `\u001b]8;;${url}\u0007${text}\u001b]8;;\u0007`;
-}
-
 function isNoPullRequestError(stderr: string): boolean {
   return stderr.toLowerCase().includes("no pull requests found for branch");
 }
@@ -108,8 +104,7 @@ async function loadPullRequestStatus(
 
 function formatPullRequestStatus(ctx: ExtensionContext, status: PullRequestStatus): string {
   const suffix = status.state === "OPEN" ? "" : ` (${status.state.toLowerCase()})`;
-  const label = ctx.ui.theme.underline(ctx.ui.theme.fg("dim", `#${status.number}${suffix}`));
-  return createHyperlink(status.url, label);
+  return ctx.ui.theme.fg("dim", `#${status.number}${suffix}`);
 }
 
 export default function gitPrStatusExtension(pi: ExtensionAPI) {
