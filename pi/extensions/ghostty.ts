@@ -14,6 +14,7 @@ import { writeFileSync } from "node:fs";
 import path from "node:path";
 
 const STATUS_SPINNER_INTERVAL_MS = 80;
+const PROGRESS_KEEPALIVE_INTERVAL_MS = 1_000;
 const STATUS_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const COMPLETION_FLASH_MS = 800;
 const REVIEW_EVENT_START = "review:start";
@@ -24,6 +25,7 @@ let currentTool: string | undefined;
 let isWorking = false;
 let frameIndex = 0;
 let spinnerTimer: ReturnType<typeof setInterval> | undefined;
+let progressKeepaliveTimer: ReturnType<typeof setInterval> | undefined;
 let completionTimer: ReturnType<typeof setTimeout> | undefined;
 let pendingPromptCount = 0;
 let latestCtx: ExtensionContext | undefined;
@@ -54,6 +56,12 @@ function clearSpinnerTimer(): void {
   if (!spinnerTimer) return;
   clearInterval(spinnerTimer);
   spinnerTimer = undefined;
+}
+
+function clearProgressKeepaliveTimer(): void {
+  if (!progressKeepaliveTimer) return;
+  clearInterval(progressKeepaliveTimer);
+  progressKeepaliveTimer = undefined;
 }
 
 function clearCompletionTimer(): void {
@@ -129,8 +137,17 @@ function startSpinnerTimer(ctx: ExtensionContext): void {
   }, STATUS_SPINNER_INTERVAL_MS);
 }
 
+function startProgressKeepaliveTimer(): void {
+  clearProgressKeepaliveTimer();
+  progressKeepaliveTimer = setInterval(() => {
+    if (!isBusy() || hasPendingPrompts()) return;
+    setProgress(3);
+  }, PROGRESS_KEEPALIVE_INTERVAL_MS);
+}
+
 function startSpinner(ctx: ExtensionContext): void {
   clearSpinnerTimer();
+  clearProgressKeepaliveTimer();
   clearCompletionTimer();
 
   isWorking = true;
@@ -142,11 +159,13 @@ function startSpinner(ctx: ExtensionContext): void {
 
   if (!hasPendingPrompts()) {
     startSpinnerTimer(ctx);
+    startProgressKeepaliveTimer();
   }
 }
 
 function renderCompletionFlash(ctx: ExtensionContext): void {
   clearSpinnerTimer();
+  clearProgressKeepaliveTimer();
   setProgress(1, 100);
   ctx.ui.setTitle(buildTitle());
 
@@ -161,6 +180,7 @@ function stopSpinner(ctx: ExtensionContext): void {
   isWorking = false;
   currentTool = undefined;
   clearSpinnerTimer();
+  clearProgressKeepaliveTimer();
 
   if (hasPendingPrompts()) {
     setProgress(0);
@@ -172,6 +192,7 @@ function stopSpinner(ctx: ExtensionContext): void {
     setProgress(3);
     renderWorkingTitle(ctx);
     startSpinnerTimer(ctx);
+    startProgressKeepaliveTimer();
     return;
   }
 
@@ -181,6 +202,7 @@ function stopSpinner(ctx: ExtensionContext): void {
 function handlePromptStart(ctx: ExtensionContext): void {
   clearCompletionTimer();
   clearSpinnerTimer();
+  clearProgressKeepaliveTimer();
   setProgress(0);
   renderActiveTitle(ctx);
 }
@@ -197,6 +219,7 @@ function handlePromptEnd(ctx: ExtensionContext): void {
     setProgress(3);
     renderWorkingTitle(ctx);
     startSpinnerTimer(ctx);
+    startProgressKeepaliveTimer();
     return;
   }
 
@@ -217,10 +240,12 @@ function markReviewSessionInactive(sessionKey: string): void {
 
 function handleReviewStart(ctx: ExtensionContext): void {
   clearCompletionTimer();
+  clearProgressKeepaliveTimer();
   setProgress(hasPendingPrompts() ? 0 : 3);
   renderActiveTitle(ctx);
   if (!hasPendingPrompts()) {
     startSpinnerTimer(ctx);
+    startProgressKeepaliveTimer();
   }
 }
 
@@ -240,6 +265,7 @@ function handleReviewEnd(ctx: ExtensionContext): void {
     setProgress(3);
     renderActiveTitle(ctx);
     startSpinnerTimer(ctx);
+    startProgressKeepaliveTimer();
     return;
   }
 
@@ -254,8 +280,11 @@ export default function (pi: ExtensionAPI) {
     sessionName = pi.getSessionName();
     syncSessionTitle(ctx);
     clearSpinnerTimer();
+    clearProgressKeepaliveTimer();
     if (isBusy() && !hasPendingPrompts()) {
+      setProgress(3);
       startSpinnerTimer(ctx);
+      startProgressKeepaliveTimer();
     }
   });
 
@@ -330,6 +359,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_shutdown", async (_event, ctx) => {
     clearSpinnerTimer();
+    clearProgressKeepaliveTimer();
     clearCompletionTimer();
     isWorking = false;
     currentTool = undefined;
