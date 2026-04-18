@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import net from "node:net";
 import process from "node:process";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import TelegramBot from "node-telegram-bot-api";
 import { extractTextFromMessage } from "./message-text.mjs";
@@ -14,6 +14,9 @@ const RUN_DIR = path.join(AGENT_DIR, "run");
 const SOCKET_PATH = path.join(RUN_DIR, "telegram.sock");
 const CONFIG_DIR = path.join(AGENT_DIR, "telegram");
 const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
+const TELEGRAM_BOT_TOKEN_ENV = "PI_TELEGRAM_BOT_TOKEN";
+const TELEGRAM_KEYCHAIN_SERVICE = "pi.telegram";
+const TELEGRAM_KEYCHAIN_ACCOUNT = "bot-token";
 
 const TELEGRAM_COMMANDS = [
   { command: "pin", description: "Pair this chat with pi using a 6-digit PIN" },
@@ -46,15 +49,103 @@ async function loadConfig() {
     const raw = await fsp.readFile(CONFIG_PATH, "utf8");
     return JSON.parse(raw);
   } catch {
-    return null;
+    return {};
+  }
+}
+
+async function removeDirectoryIfEmpty(dirPath) {
+  try {
+    const entries = await fsp.readdir(dirPath);
+    if (!entries.length) {
+      await fsp.rmdir(dirPath);
+    }
+  } catch {
+    // ignore
   }
 }
 
 async function saveConfig(cfg) {
+  const nextConfig = {};
+  const botToken = typeof cfg?.botToken === "string" ? cfg.botToken.trim() : "";
+  if (botToken) nextConfig.botToken = botToken;
+  if (typeof cfg?.pairedChatId === "number") nextConfig.pairedChatId = cfg.pairedChatId;
+
+  if (nextConfig.botToken === undefined && nextConfig.pairedChatId === undefined) {
+    await fsp.unlink(CONFIG_PATH).catch(() => undefined);
+    await removeDirectoryIfEmpty(CONFIG_DIR);
+    return;
+  }
+
   await fsp.mkdir(CONFIG_DIR, { recursive: true, mode: 0o700 });
   const tmp = CONFIG_PATH + ".tmp";
-  await fsp.writeFile(tmp, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
+  await fsp.writeFile(tmp, JSON.stringify(nextConfig, null, 2) + "\n", { mode: 0o600 });
   await fsp.rename(tmp, CONFIG_PATH);
+}
+
+function canUseTelegramKeychain() {
+  return process.platform === "darwin";
+}
+
+async function runTelegramKeychainCommand(args) {
+  return await new Promise((resolve, reject) => {
+    execFile("security", args, { encoding: "utf8" }, (error, stdout) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(stdout.trim());
+    });
+  });
+}
+
+async function readTelegramBotTokenFromKeychain() {
+  if (!canUseTelegramKeychain()) return null;
+
+  try {
+    return (
+      (await runTelegramKeychainCommand([
+        "find-generic-password",
+        "-w",
+        "-a",
+        TELEGRAM_KEYCHAIN_ACCOUNT,
+        "-s",
+        TELEGRAM_KEYCHAIN_SERVICE,
+      ])) || null
+    );
+  } catch {
+    return null;
+  }
+}
+
+function buildPersistedConfig(config, tokenSource) {
+  const nextConfig = {};
+  if (tokenSource === "config" && typeof config?.botToken === "string" && config.botToken.trim()) {
+    nextConfig.botToken = config.botToken.trim();
+  }
+  if (typeof config?.pairedChatId === "number") nextConfig.pairedChatId = config.pairedChatId;
+  return nextConfig;
+}
+
+async function resolveTelegramBotToken(config = undefined) {
+  const envToken = process.env[TELEGRAM_BOT_TOKEN_ENV]?.trim();
+  if (envToken) return { token: envToken, source: "env" };
+
+  const keychainToken = await readTelegramBotTokenFromKeychain();
+  if (keychainToken) return { token: keychainToken, source: "keychain" };
+
+  const loadedConfig = config ?? (await loadConfig());
+  const configuredToken = typeof loadedConfig?.botToken === "string" ? loadedConfig.botToken.trim() : "";
+  if (configuredToken) return { token: configuredToken, source: "config" };
+
+  return { token: null, source: "missing" };
+}
+
+function describeTelegramBotTokenSetup() {
+  if (canUseTelegramKeychain()) {
+    return `Set ${TELEGRAM_BOT_TOKEN_ENV}, store it in macOS Keychain, or create ${CONFIG_PATH} with {"botToken": "..."}.`;
+  }
+
+  return `Set ${TELEGRAM_BOT_TOKEN_ENV} or create ${CONFIG_PATH} with {"botToken": "..."}.`;
 }
 
 function safeJsonParse(line) {
@@ -471,10 +562,12 @@ async function ensureHeadlessSessionPathExists(cwd) {
 }
 
 let config = await loadConfig();
-if (!config || !config.botToken) {
-  console.error(`[telegram] Missing botToken in ${CONFIG_PATH}.`);
+const botTokenInfo = await resolveTelegramBotToken(config);
+if (!botTokenInfo.token) {
+  console.error(`[telegram] Missing bot token. ${describeTelegramBotTokenSetup()}`);
   process.exit(1);
 }
+config = buildPersistedConfig(config, botTokenInfo.source);
 
 let bot = null;
 const sessions = new Map();
@@ -736,14 +829,16 @@ function updateTypingIndicator() {
 
 async function setPairedChatId(chatId) {
   pairedChatId = chatId;
-  config = { ...config, pairedChatId: chatId };
+  config = buildPersistedConfig({ ...config, pairedChatId: chatId }, botTokenInfo.source);
   await saveConfig(config);
   updateTypingIndicator();
 }
 
 async function clearPairing() {
   pairedChatId = undefined;
-  delete config.pairedChatId;
+  const nextConfig = { ...config };
+  delete nextConfig.pairedChatId;
+  config = buildPersistedConfig(nextConfig, botTokenInfo.source);
   await saveConfig(config);
   chatState.activeSessionKey = undefined;
   chatState.lastSeenSeqBySessionKey = {};
@@ -1673,7 +1768,7 @@ async function startServer() {
 
 server = await startServer();
 
-bot = new TelegramBot(config.botToken, {
+bot = new TelegramBot(botTokenInfo.token, {
   polling: {
     params: {
       timeout: TELEGRAM_POLL_TIMEOUT_SECONDS,

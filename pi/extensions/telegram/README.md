@@ -13,15 +13,16 @@ npm install
 
 ## Config
 
-Stored at:
+Bot token lookup order:
 
-- `~/.pi/agent/telegram/config.json`
+1. `PI_TELEGRAM_BOT_TOKEN`
+2. macOS Keychain (`service=pi.telegram`, `account=bot-token`)
+3. Legacy fallback: `~/.pi/agent/telegram/config.json`
 
-Example:
+The config file is still used for pairing state:
 
 ```json
 {
-  "botToken": "123:abc...",
   "pairedChatId": 123456789
 }
 ```
@@ -35,7 +36,7 @@ Example:
 ```
 
 First time:
-- pi will ask for the bot token and save it
+- pi will ask for the bot token and save it to macOS Keychain (or the config file on non-macOS systems)
 - pi will show a 6-digit PIN
 
 - Status:

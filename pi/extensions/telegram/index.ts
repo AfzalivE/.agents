@@ -9,7 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import fsp from "node:fs/promises";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { extractTextFromMessage } from "./message-text.mjs";
 
 const AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
@@ -17,6 +17,9 @@ const RUN_DIR = path.join(AGENT_DIR, "run");
 const SOCKET_PATH = path.join(RUN_DIR, "telegram.sock");
 const CONFIG_DIR = path.join(AGENT_DIR, "telegram");
 const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
+const TELEGRAM_BOT_TOKEN_ENV = "PI_TELEGRAM_BOT_TOKEN";
+const TELEGRAM_KEYCHAIN_SERVICE = "pi.telegram";
+const TELEGRAM_KEYCHAIN_ACCOUNT = "bot-token";
 const AUTO_CONNECT_INTERVAL_MS = 3_000;
 const COMPACTION_RELEASE_DELAY_MS = 500;
 const COMPACTION_STALE_RESET_MS = 120_000;
@@ -66,6 +69,7 @@ type Config = {
 };
 
 type PromptStatus = "completed" | "error";
+type TelegramBotTokenSource = "env" | "keychain" | "config" | "missing";
 
 async function withPromptSignal<T>(pi: ExtensionAPI, run: () => Promise<T>): Promise<T> {
   pi.events.emit("ui:prompt_start", { source: "telegram" });
@@ -166,11 +170,129 @@ async function loadConfig(): Promise<Config> {
   }
 }
 
+async function removeDirectoryIfEmpty(dirPath: string): Promise<void> {
+  try {
+    const entries = await fsp.readdir(dirPath);
+    if (!entries.length) {
+      await fsp.rmdir(dirPath);
+    }
+  } catch {
+    // ignore
+  }
+}
+
 async function saveConfig(cfg: Config): Promise<void> {
+  const nextConfig: Config = {};
+  const botToken = cfg.botToken?.trim();
+  if (botToken) nextConfig.botToken = botToken;
+  if (cfg.pairedChatId !== undefined) nextConfig.pairedChatId = cfg.pairedChatId;
+
+  if (nextConfig.botToken === undefined && nextConfig.pairedChatId === undefined) {
+    await fsp.unlink(CONFIG_PATH).catch(() => undefined);
+    await removeDirectoryIfEmpty(CONFIG_DIR);
+    return;
+  }
+
   await fsp.mkdir(CONFIG_DIR, { recursive: true, mode: 0o700 });
   const tmp = CONFIG_PATH + ".tmp";
-  await fsp.writeFile(tmp, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
+  await fsp.writeFile(tmp, JSON.stringify(nextConfig, null, 2) + "\n", { mode: 0o600 });
   await fsp.rename(tmp, CONFIG_PATH);
+}
+
+function canUseTelegramKeychain(): boolean {
+  return process.platform === "darwin";
+}
+
+async function runTelegramKeychainCommand(args: string[]): Promise<string> {
+  return await new Promise((resolve, reject) => {
+    execFile("security", args, { encoding: "utf8" }, (error, stdout) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(stdout.trim());
+    });
+  });
+}
+
+async function readTelegramBotTokenFromKeychain(): Promise<string | null> {
+  if (!canUseTelegramKeychain()) return null;
+
+  try {
+    return (
+      (await runTelegramKeychainCommand([
+        "find-generic-password",
+        "-w",
+        "-a",
+        TELEGRAM_KEYCHAIN_ACCOUNT,
+        "-s",
+        TELEGRAM_KEYCHAIN_SERVICE,
+      ])) || null
+    );
+  } catch {
+    return null;
+  }
+}
+
+async function saveTelegramBotTokenToKeychain(token: string): Promise<void> {
+  if (!canUseTelegramKeychain()) {
+    throw new Error("macOS Keychain is not available for Telegram bot token storage.");
+  }
+
+  try {
+    await runTelegramKeychainCommand([
+      "add-generic-password",
+      "-U",
+      "-w",
+      token,
+      "-a",
+      TELEGRAM_KEYCHAIN_ACCOUNT,
+      "-s",
+      TELEGRAM_KEYCHAIN_SERVICE,
+    ]);
+  } catch {
+    throw new Error("Failed to save Telegram bot token to macOS Keychain.");
+  }
+}
+
+function buildPersistedConfig(config: Config, tokenSource: TelegramBotTokenSource): Config {
+  const nextConfig: Config = {};
+  if (tokenSource === "config" && config.botToken?.trim())
+    nextConfig.botToken = config.botToken.trim();
+  if (config.pairedChatId !== undefined) nextConfig.pairedChatId = config.pairedChatId;
+  return nextConfig;
+}
+
+async function clearTelegramConfigBotToken(): Promise<void> {
+  const config = await loadConfig();
+  if (!config.botToken?.trim()) return;
+  delete config.botToken;
+  await saveConfig(config);
+}
+
+async function resolveTelegramBotToken(): Promise<{
+  token: string | null;
+  source: TelegramBotTokenSource;
+}> {
+  const envToken = process.env[TELEGRAM_BOT_TOKEN_ENV]?.trim();
+  if (envToken) return { token: envToken, source: "env" };
+
+  const keychainToken = await readTelegramBotTokenFromKeychain();
+  if (keychainToken) return { token: keychainToken, source: "keychain" };
+
+  const config = await loadConfig();
+  const configuredToken = config.botToken?.trim();
+  if (configuredToken) return { token: configuredToken, source: "config" };
+
+  return { token: null, source: "missing" };
+}
+
+function describeTelegramBotTokenSetup(): string {
+  if (canUseTelegramKeychain()) {
+    return `Set ${TELEGRAM_BOT_TOKEN_ENV}, store it in macOS Keychain via /telegram pair, or create ${CONFIG_PATH} with {"botToken": "..."}.`;
+  }
+
+  return `Set ${TELEGRAM_BOT_TOKEN_ENV} or create ${CONFIG_PATH} with {"botToken": "..."}.`;
 }
 
 function parseArgs(args: string | undefined): string[] {
@@ -487,11 +609,7 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  function sendInjectResult(
-    id: string,
-    status: "accepted" | "rejected",
-    reason?: string,
-  ) {
+  function sendInjectResult(id: string, status: "accepted" | "rejected", reason?: string) {
     send({ type: "inject_result", id, status, reason });
   }
 
@@ -609,7 +727,8 @@ export default function (pi: ExtensionAPI) {
     if (state.connectPromise) return;
 
     const cfg = await loadConfig();
-    if (!cfg.botToken || cfg.pairedChatId === undefined) return;
+    const tokenInfo = await resolveTelegramBotToken();
+    if (!tokenInfo.token || cfg.pairedChatId === undefined) return;
 
     const daemonUp = await canConnectSocket();
 
@@ -824,12 +943,14 @@ export default function (pi: ExtensionAPI) {
 
       if (sub === "status") {
         const cfg = await loadConfig();
-        const tokenState = cfg.botToken ? "configured" : "missing";
-        const paired = cfg.pairedChatId ? `paired (${cfg.pairedChatId})` : "unpaired";
+        const tokenInfo = await resolveTelegramBotToken();
+        const tokenState = tokenInfo.token ? tokenInfo.source : "missing";
+        const paired = cfg.pairedChatId !== undefined ? `paired (${cfg.pairedChatId})` : "unpaired";
         const daemonUp = await canConnectSocket();
 
         const lines = [
-          `Config: token ${tokenState}, ${paired}`,
+          `Token: ${tokenState}`,
+          `Pairing: ${paired}`,
           `Daemon: ${daemonUp ? "running" : "not running"}`,
           `This window: ${isSocketConnected() && state.sessionNo !== null ? `connected (session ${state.sessionNo})` : "not connected"}`,
         ];
@@ -839,9 +960,10 @@ export default function (pi: ExtensionAPI) {
 
       if (sub === "unpair") {
         const cfg = await loadConfig();
+        const tokenInfo = await resolveTelegramBotToken();
         if (cfg.pairedChatId !== undefined) {
           delete cfg.pairedChatId;
-          await saveConfig(cfg);
+          await saveConfig(buildPersistedConfig(cfg, tokenInfo.source));
         }
 
         if (await canConnectSocket()) {
@@ -863,21 +985,27 @@ export default function (pi: ExtensionAPI) {
 
       if (sub === "pair") {
         const cfg = await loadConfig();
-        if (!cfg.botToken) {
+        const tokenInfo = await resolveTelegramBotToken();
+        if (!tokenInfo.token) {
           if (!ctx.hasUI) {
-            throw new Error(`Missing botToken. Create ${CONFIG_PATH} with {"botToken": "..."}.`);
+            throw new Error(`Missing bot token. ${describeTelegramBotTokenSetup()}`);
           }
+          const promptLocation = canUseTelegramKeychain()
+            ? "saved to macOS Keychain"
+            : `stored in ${CONFIG_PATH}`;
           const token = await withPromptSignal(pi, () =>
-            ctx.ui.input(
-              "Telegram bot token",
-              "Paste the bot token (saved to ~/.pi/agent/telegram/config.json)",
-            ),
+            ctx.ui.input("Telegram bot token", `Paste the bot token (${promptLocation})`),
           );
           if (!token) {
             notify("Cancelled.", "info");
             return;
           }
-          await saveConfig({ ...cfg, botToken: token.trim() });
+          if (canUseTelegramKeychain()) {
+            await saveTelegramBotTokenToKeychain(token.trim());
+            await clearTelegramConfigBotToken();
+          } else {
+            await saveConfig({ ...cfg, botToken: token.trim() });
+          }
         }
 
         const connectResult = await runWithLoader(
