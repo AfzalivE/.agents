@@ -1774,6 +1774,7 @@ export default function todosExtension(pi: ExtensionAPI) {
         "Use task ids exactly as returned by the tool, including local:<uuid> and todoist:<id> forms.",
       ],
       parameters: TodoParams,
+      renderShell: "self",
 
       async execute(_toolCallId, input, signal, _onUpdate, ctx) {
         const action = input.action;
