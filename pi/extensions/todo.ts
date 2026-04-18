@@ -18,6 +18,7 @@ import {
 import { Type } from "@sinclair/typebox";
 import { Text } from "@mariozechner/pi-tui";
 import crypto from "node:crypto";
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import os from "node:os";
@@ -28,6 +29,8 @@ import path from "node:path";
 const TODOIST_API_BASE_URL = "https://api.todoist.com";
 const TODOIST_API_V1_PREFIX = "/api/v1";
 const TODOIST_TOKEN_ENV = "TODOIST_API_TOKEN";
+const TODOIST_KEYCHAIN_SERVICE = "pi.todoist";
+const TODOIST_KEYCHAIN_ACCOUNT = "api-token";
 const TODOIST_CONFIG_DIR = path.join(os.homedir(), ".pi", "agent", "todoist");
 const TODOIST_CONFIG_PATH = path.join(TODOIST_CONFIG_DIR, "config.json");
 
@@ -249,7 +252,7 @@ function setTodoToolActive(pi: ExtensionAPI, active: boolean): void {
 }
 
 async function refreshTodoToolActivation(pi: ExtensionAPI): Promise<void> {
-  const { token } = await resolveApiTokenFromEnvOrConfig();
+  const { token } = await resolveApiTokenFromEnvKeychainOrConfig();
   setTodoToolActive(pi, Boolean(token) && !runtimeState.authSyncBlocked);
 }
 
@@ -484,18 +487,92 @@ async function loadTodoistConfig(): Promise<TodoistConfig> {
 }
 
 async function saveTodoistConfig(config: TodoistConfig): Promise<void> {
+  const nextToken = config.apiToken?.trim();
+  if (!nextToken) {
+    await fs.unlink(TODOIST_CONFIG_PATH).catch(() => undefined);
+    await removeDirectoryIfEmpty(TODOIST_CONFIG_DIR);
+    return;
+  }
+
   await fs.mkdir(TODOIST_CONFIG_DIR, { recursive: true, mode: 0o700 });
   const tempPath = `${TODOIST_CONFIG_PATH}.tmp`;
-  await fs.writeFile(tempPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+  await fs.writeFile(tempPath, `${JSON.stringify({ apiToken: nextToken }, null, 2)}\n`, {
+    mode: 0o600,
+  });
   await fs.rename(tempPath, TODOIST_CONFIG_PATH);
 }
 
-async function resolveApiTokenFromEnvOrConfig(): Promise<{
+function canUseTodoistKeychain(): boolean {
+  return process.platform === "darwin";
+}
+
+async function runTodoistKeychainCommand(args: string[]): Promise<string> {
+  return await new Promise((resolve, reject) => {
+    execFile("security", args, { encoding: "utf8" }, (error, stdout) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(stdout.trim());
+    });
+  });
+}
+
+async function readTodoistKeychainToken(): Promise<string | null> {
+  if (!canUseTodoistKeychain()) return null;
+
+  try {
+    return (
+      (await runTodoistKeychainCommand([
+        "find-generic-password",
+        "-w",
+        "-a",
+        TODOIST_KEYCHAIN_ACCOUNT,
+        "-s",
+        TODOIST_KEYCHAIN_SERVICE,
+      ])) || null
+    );
+  } catch {
+    return null;
+  }
+}
+
+async function saveTodoistKeychainToken(token: string): Promise<void> {
+  if (!canUseTodoistKeychain()) {
+    throw new Error("macOS Keychain is not available for Todoist token storage.");
+  }
+
+  try {
+    await runTodoistKeychainCommand([
+      "add-generic-password",
+      "-U",
+      "-w",
+      token,
+      "-a",
+      TODOIST_KEYCHAIN_ACCOUNT,
+      "-s",
+      TODOIST_KEYCHAIN_SERVICE,
+    ]);
+  } catch {
+    throw new Error("Failed to save Todoist token to macOS Keychain.");
+  }
+}
+
+async function clearTodoistConfigToken(): Promise<void> {
+  const config = await loadTodoistConfig();
+  if (!config.apiToken?.trim()) return;
+  await saveTodoistConfig({});
+}
+
+async function resolveApiTokenFromEnvKeychainOrConfig(): Promise<{
   token: string | null;
-  source: "env" | "config" | "missing";
+  source: "env" | "keychain" | "config" | "missing";
 }> {
   const envToken = process.env[TODOIST_TOKEN_ENV]?.trim();
   if (envToken) return { token: envToken, source: "env" };
+
+  const keychainToken = await readTodoistKeychainToken();
+  if (keychainToken) return { token: keychainToken, source: "keychain" };
 
   const config = await loadTodoistConfig();
   const configuredToken = config.apiToken?.trim();
@@ -514,7 +591,7 @@ async function resolveApiToken(
   ctx: ExtensionContext,
   options: { allowPrompt: boolean; forcePrompt?: boolean },
 ): Promise<string | null> {
-  const resolved = await resolveApiTokenFromEnvOrConfig();
+  const resolved = await resolveApiTokenFromEnvKeychainOrConfig();
   if (resolved.token && !options.forcePrompt) return resolved.token;
 
   if (!options.allowPrompt || !ctx.hasUI) return resolved.token ?? null;
@@ -528,12 +605,22 @@ async function resolveApiToken(
     return resolved.token;
   }
 
+  const promptLocation = canUseTodoistKeychain()
+    ? "saved to macOS Keychain"
+    : `stored in ${TODOIST_CONFIG_PATH}`;
+  const existingLocation =
+    resolved.source === "keychain"
+      ? "saved in macOS Keychain"
+      : resolved.source === "config"
+        ? `stored in ${TODOIST_CONFIG_PATH}`
+        : promptLocation;
+
   const enteredToken = await withPromptSignal(pi, () =>
     ctx.ui.input(
       "Todoist API token",
       resolved.token
-        ? `Enter a replacement Todoist API token (stored in ${TODOIST_CONFIG_PATH})`
-        : `Paste your Todoist API token (stored in ${TODOIST_CONFIG_PATH})`,
+        ? `Enter a replacement Todoist API token (${existingLocation})`
+        : `Paste your Todoist API token (${promptLocation})`,
     ),
   );
 
@@ -544,10 +631,16 @@ async function resolveApiToken(
   }
 
   const token = enteredToken.trim();
-  const config = await loadTodoistConfig();
-  await saveTodoistConfig({ ...config, apiToken: token });
+  if (canUseTodoistKeychain()) {
+    await saveTodoistKeychainToken(token);
+    await clearTodoistConfigToken();
+    ctx.ui.notify("Saved Todoist token to macOS Keychain.", "info");
+  } else {
+    await saveTodoistConfig({ apiToken: token });
+    ctx.ui.notify(`Saved Todoist token to ${TODOIST_CONFIG_PATH}.`, "info");
+  }
+
   runtimeState.suppressTokenPrompt = false;
-  ctx.ui.notify("Saved Todoist token.", "info");
   return token;
 }
 
@@ -1714,7 +1807,7 @@ async function runListCommand(
 async function runDoctor(ctx: ExtensionCommandContext): Promise<void> {
   const { output, hasToken } = await withSpinnerStatus(ctx, "running todo doctor...", async () => {
     const lines: string[] = [];
-    const tokenInfo = await resolveApiTokenFromEnvOrConfig();
+    const tokenInfo = await resolveApiTokenFromEnvKeychainOrConfig();
     const hasToken = Boolean(tokenInfo.token);
     const outboxPath = getOutboxPath(ctx.cwd);
     const pendingOperations = await readOutbox(ctx.cwd);
