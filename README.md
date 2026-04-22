@@ -68,7 +68,8 @@ By default it sets up all agents. Pass `--codex`, `--claude`, and/or `--pi` to l
 | openai-verbosity | `/verbosity` | Set verbosity for supported OpenAI models |
 | review | `/review`, `/triage` | Multi-focus review and PR feedback triage for PRs, branches, commits, and local changes, with integrated follow-up fixes |
 | sandbox | `/sandbox` | OS-level sandboxing for bash commands with runtime overrides |
-| session-breakdown | `/session-breakdown` | Usage stats and contribution-style calendar |
+| session-breakdown | `/session-breakdown` | Legacy usage stats and contribution-style calendar |
+| usage | `/usage` | Historical provider usage breakdown with all-provider history and live quota snapshots |
 | telegram | `/telegram` | Interact with Pi via a Telegram bot and local daemon |
 | todo | `/todo` | Todoist-backed tasks with offline outbox sync for single or multi-session work |
 | websearch |  | Web search via Gemini, OpenAI, or Claude, leveraging Pi or browser session credentials |
