@@ -1,4 +1,9 @@
 {
+  "commands": {
+    "blocked": [
+      "npx"
+    ]
+  },
   "network": {
     "allowedDomains": [
       "localhost",
