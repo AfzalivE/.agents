@@ -520,7 +520,10 @@ type ReviewStaleness = {
   nextStep: string;
 };
 
+type ReviewMessageKind = "report" | "failure" | "triage" | "help";
+
 type ReviewMessageDetails = {
+  kind?: "report";
   request: {
     mode: ReviewRequestMode;
     signature: string;
@@ -655,6 +658,7 @@ type TriageMessageItem = TriageItem & {
 };
 
 type TriageMessageDetails = {
+  kind: "triage";
   generatedAt: string;
   pr: {
     number: number;
@@ -851,8 +855,9 @@ function getReviewArgumentCompletions(
 
 function showReviewHelp(pi: ExtensionAPI) {
   pi.sendMessage({
-    customType: "review-help",
+    customType: "review",
     display: true,
+    details: { kind: "help" satisfies ReviewMessageKind },
     content: `## /review help
 
 Run findings-only code review in 4 parallel focuses (general, reuse, quality, efficiency).
@@ -889,7 +894,7 @@ Run findings-only code review in 4 parallel focuses (general, reuse, quality, ef
 - \`/fix branch main models=sonnet\`
 
 ### /fix behavior
-- Uses the last message only when it is a matching \`customType: "review"\` payload.
+- Uses the last message only when it is a matching \`customType: "review"\` report payload.
 - Otherwise, runs a fresh \`/review\` first.
 - If the last review is stale, \`/fix\` warns and continues.
 - If a review started by \`/fix\` goes stale mid-run, it shows the findings and applies no fixes.
@@ -2893,7 +2898,10 @@ async function runTriageTask(options: {
       }
       return {
         ok: false,
-        error: buildProviderErrorMessage("Triage failed due to a provider error.", taskResult.error),
+        error: buildProviderErrorMessage(
+          "Triage failed due to a provider error.",
+          taskResult.error,
+        ),
       };
     }
 
@@ -2944,7 +2952,10 @@ function splitModelPatternThinkingSuffix(modelPattern: string): {
   const lastColon = modelPattern.lastIndexOf(":");
   if (lastColon <= 0) return { basePattern: modelPattern };
 
-  const thinkingSuffix = modelPattern.slice(lastColon + 1).trim().toLowerCase();
+  const thinkingSuffix = modelPattern
+    .slice(lastColon + 1)
+    .trim()
+    .toLowerCase();
   if (!isReviewThinkingLevel(thinkingSuffix)) {
     return { basePattern: modelPattern };
   }
@@ -3495,6 +3506,7 @@ function buildReviewFooterNotes(staleness: ReviewStaleness | undefined): string[
 function parseReviewMessageDetails(value: unknown): ReviewMessageDetails | null {
   if (!value || typeof value !== "object") return null;
   const details = value as ReviewMessageDetails;
+  if (details.kind !== undefined && details.kind !== "report") return null;
   if (!isReviewRequestMode(details.request?.mode)) return null;
   if (typeof details.request?.signature !== "string") return null;
   if (!isScopeMode(details.scope?.mode)) return null;
@@ -3804,9 +3816,10 @@ async function runReviewPipeline(
         const failureReport = `${reviewedScopeLine}\n\n${buildReviewFailuresMarkdown(failedFocuses)}`;
         pi.sendMessage(
           {
-            customType: "review-errors",
+            customType: "review",
             content: failureReport,
             display: true,
+            details: { kind: "failure" satisfies ReviewMessageKind },
           },
           { deliverAs: "followUp" },
         );
@@ -3848,26 +3861,19 @@ async function runReviewPipeline(
       return { ok: false, error: REVIEW_CANCELLED_ERROR };
     }
 
-    if (failedCount > 0) {
-      pi.sendMessage(
-        {
-          customType: "review-errors",
-          content: buildReviewFailuresMarkdown(failedFocuses),
-          display: true,
-        },
-        { deliverAs: "followUp" },
-      );
-    }
-
     const reviewedScopeLine = buildReviewedScopeLine(scope, Date.now() - startedAtMs);
-    const findingsMarkdown = buildReviewFindingsMarkdown(
+    let findingsMarkdown = buildReviewFindingsMarkdown(
       reviewedScopeLine,
       findings,
       completedReviews,
       totalReviews,
       buildReviewFooterNotes(reviewStaleness),
     );
+    if (failedCount > 0) {
+      findingsMarkdown = `${findingsMarkdown.trimEnd()}\n\n${buildReviewFailuresMarkdown(failedFocuses)}`;
+    }
     const details: ReviewMessageDetails = {
+      kind: "report",
       request: {
         mode: request.mode,
         signature: buildRequestSignature(request),
@@ -3943,6 +3949,7 @@ async function runTriagePipeline(
     const context = prepared.data;
     if (context.feedbackItems.length === 0) {
       const details: TriageMessageDetails = {
+        kind: "triage",
         generatedAt: new Date().toISOString(),
         pr: {
           number: context.prNumber,
@@ -3961,7 +3968,7 @@ async function runTriagePipeline(
       };
       pi.sendMessage(
         {
-          customType: "review-triage",
+          customType: "review",
           content: buildTriageMarkdown(context, [], Date.now() - startedAtMs),
           display: true,
           details,
@@ -4022,6 +4029,7 @@ async function runTriagePipeline(
       };
     });
     const details: TriageMessageDetails = {
+      kind: "triage",
       generatedAt: new Date().toISOString(),
       pr: {
         number: context.prNumber,
@@ -4041,7 +4049,7 @@ async function runTriagePipeline(
 
     pi.sendMessage(
       {
-        customType: "review-triage",
+        customType: "review",
         content: buildTriageMarkdown(context, items, Date.now() - startedAtMs),
         display: true,
         details,
