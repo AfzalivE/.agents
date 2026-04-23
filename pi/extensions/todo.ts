@@ -15,7 +15,7 @@ import {
   type ExtensionCommandContext,
   type ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import { Text } from "@mariozechner/pi-tui";
 import crypto from "node:crypto";
 import { execFile } from "node:child_process";
@@ -2073,6 +2073,8 @@ export default function todosExtension(pi: ExtensionAPI) {
             };
           }
         }
+
+        return fail(`Error: unsupported action ${String(action)}`);
       },
 
       renderCall(input, theme) {
