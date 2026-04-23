@@ -220,3 +220,4 @@ skills/ms-openapi-explorer/cache/*
 skills/doist
 agent-brain/
 logs/
+/.agents/memory
