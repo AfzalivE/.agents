@@ -5,7 +5,7 @@ import {
   SessionManager,
   buildSessionContext,
   createAgentSession,
-  createReadOnlyTools,
+  getAgentDir,
   getMarkdownTheme,
   type ExtensionAPI,
   type ExtensionCommandContext,
@@ -36,6 +36,7 @@ const BTW_APPEND_SYSTEM_PROMPT = `## BTW mode
 - Ignore any inherited prompt text that suggests other tools are available.
 - Never attempt edits, writes, or mutating shell commands in BTW mode.
 - If the request requires changes or mutating commands, say so briefly and tell the user to ask in the main conversation.`;
+const BTW_TOOL_NAMES = ["read", "grep", "find", "ls"];
 
 type BtwResult = {
   question: string;
@@ -215,6 +216,7 @@ async function runBtwRequest(
 
   const resourceLoader = new DefaultResourceLoader({
     cwd: snapshot.cwd,
+    agentDir: getAgentDir(),
     noExtensions: true,
     noSkills: true,
     noPromptTemplates: true,
@@ -231,7 +233,7 @@ async function runBtwRequest(
     thinkingLevel: snapshot.thinkingLevel,
     modelRegistry: snapshot.modelRegistry,
     resourceLoader,
-    tools: createReadOnlyTools(snapshot.cwd),
+    tools: BTW_TOOL_NAMES,
     sessionManager,
   });
 
