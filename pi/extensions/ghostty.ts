@@ -1,52 +1,37 @@
 /**
- * Ghostty terminal title + progress integration.
+ * Ghostty terminal title integration.
  *
  * - Shows project/session in the terminal title
  * - Shows a braille spinner in the title while the agent is working
  * - Shows a ? marker while an extension prompt is waiting for input
  * - Updates title with the current tool name during tool execution
- * - Pulses Ghostty's native progress bar while working
  * - Treats background /review runs as working state via review:start/review:end events
+ *
+ * Pi now emits native OSC 9;4 progress indicators, so this extension only manages the title.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { writeFileSync } from "node:fs";
 import path from "node:path";
 
 const STATUS_SPINNER_INTERVAL_MS = 80;
-const PROGRESS_KEEPALIVE_INTERVAL_MS = 1_000;
 const STATUS_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const COMPLETION_FLASH_MS = 800;
 const REVIEW_EVENT_START = "review:start";
 const REVIEW_EVENT_END = "review:end";
 
 let sessionName: string | undefined;
+let sessionCwd: string | undefined;
 let currentTool: string | undefined;
 let isWorking = false;
 let frameIndex = 0;
 let spinnerTimer: ReturnType<typeof setInterval> | undefined;
-let progressKeepaliveTimer: ReturnType<typeof setInterval> | undefined;
-let completionTimer: ReturnType<typeof setTimeout> | undefined;
 let pendingPromptCount = 0;
 let latestCtx: ExtensionContext | undefined;
 let currentSessionKey: string | undefined;
 const activeReviewSessions = new Set<string>();
 
-function ghosttyWrite(seq: string): void {
-  try {
-    writeFileSync("/dev/tty", seq);
-  } catch {
-    // /dev/tty may be unavailable (e.g. subagent context)
-  }
-}
-
-function setProgress(state: number, value?: number): void {
-  const args = value !== undefined ? `${state};${value}` : `${state}`;
-  ghosttyWrite(`\x1b]9;4;${args}\x07`);
-}
-
 function buildTitle(extra?: string, marker = "π"): string {
-  const segments: string[] = [marker, path.basename(process.cwd())];
+  const cwd = sessionCwd ?? process.cwd();
+  const segments: string[] = [marker, path.basename(cwd)];
   if (sessionName) segments.push(sessionName);
   if (extra) segments.push(extra);
   return segments.join(" · ");
@@ -56,18 +41,6 @@ function clearSpinnerTimer(): void {
   if (!spinnerTimer) return;
   clearInterval(spinnerTimer);
   spinnerTimer = undefined;
-}
-
-function clearProgressKeepaliveTimer(): void {
-  if (!progressKeepaliveTimer) return;
-  clearInterval(progressKeepaliveTimer);
-  progressKeepaliveTimer = undefined;
-}
-
-function clearCompletionTimer(): void {
-  if (!completionTimer) return;
-  clearTimeout(completionTimer);
-  completionTimer = undefined;
 }
 
 function currentFrame(): string {
@@ -137,73 +110,39 @@ function startSpinnerTimer(ctx: ExtensionContext): void {
   }, STATUS_SPINNER_INTERVAL_MS);
 }
 
-function startProgressKeepaliveTimer(): void {
-  clearProgressKeepaliveTimer();
-  progressKeepaliveTimer = setInterval(() => {
-    if (!isBusy() || hasPendingPrompts()) return;
-    setProgress(3);
-  }, PROGRESS_KEEPALIVE_INTERVAL_MS);
-}
-
 function startSpinner(ctx: ExtensionContext): void {
   clearSpinnerTimer();
-  clearProgressKeepaliveTimer();
-  clearCompletionTimer();
-
   isWorking = true;
   currentTool = undefined;
   frameIndex = 0;
-
-  setProgress(hasPendingPrompts() ? 0 : 3);
   renderActiveTitle(ctx);
 
   if (!hasPendingPrompts()) {
     startSpinnerTimer(ctx);
-    startProgressKeepaliveTimer();
   }
-}
-
-function renderCompletionFlash(ctx: ExtensionContext): void {
-  clearSpinnerTimer();
-  clearProgressKeepaliveTimer();
-  setProgress(1, 100);
-  ctx.ui.setTitle(buildTitle());
-
-  clearCompletionTimer();
-  completionTimer = setTimeout(() => {
-    setProgress(0);
-    completionTimer = undefined;
-  }, COMPLETION_FLASH_MS);
 }
 
 function stopSpinner(ctx: ExtensionContext): void {
   isWorking = false;
   currentTool = undefined;
   clearSpinnerTimer();
-  clearProgressKeepaliveTimer();
 
   if (hasPendingPrompts()) {
-    setProgress(0);
     renderActiveTitle(ctx);
     return;
   }
 
   if (hasActiveReviewRuns()) {
-    setProgress(3);
     renderWorkingTitle(ctx);
     startSpinnerTimer(ctx);
-    startProgressKeepaliveTimer();
     return;
   }
 
-  renderCompletionFlash(ctx);
+  renderActiveTitle(ctx);
 }
 
 function handlePromptStart(ctx: ExtensionContext): void {
-  clearCompletionTimer();
   clearSpinnerTimer();
-  clearProgressKeepaliveTimer();
-  setProgress(0);
   renderActiveTitle(ctx);
 }
 
@@ -213,13 +152,9 @@ function handlePromptEnd(ctx: ExtensionContext): void {
     return;
   }
 
-  clearCompletionTimer();
-
   if (isBusy()) {
-    setProgress(3);
     renderWorkingTitle(ctx);
     startSpinnerTimer(ctx);
-    startProgressKeepaliveTimer();
     return;
   }
 
@@ -239,13 +174,9 @@ function markReviewSessionInactive(sessionKey: string): void {
 }
 
 function handleReviewStart(ctx: ExtensionContext): void {
-  clearCompletionTimer();
-  clearProgressKeepaliveTimer();
-  setProgress(hasPendingPrompts() ? 0 : 3);
   renderActiveTitle(ctx);
   if (!hasPendingPrompts()) {
     startSpinnerTimer(ctx);
-    startProgressKeepaliveTimer();
   }
 }
 
@@ -256,20 +187,18 @@ function handleReviewEnd(ctx: ExtensionContext): void {
   }
 
   if (hasPendingPrompts()) {
-    setProgress(0);
     renderActiveTitle(ctx);
     return;
   }
 
   if (hasActiveReviewRuns()) {
-    setProgress(3);
     renderActiveTitle(ctx);
     startSpinnerTimer(ctx);
-    startProgressKeepaliveTimer();
     return;
   }
 
-  renderCompletionFlash(ctx);
+  clearSpinnerTimer();
+  renderActiveTitle(ctx);
 }
 
 export default function (pi: ExtensionAPI) {
@@ -277,14 +206,12 @@ export default function (pi: ExtensionAPI) {
     if (!ctx.hasUI) return;
     latestCtx = ctx;
     currentSessionKey = getSessionKey(ctx);
+    sessionCwd = ctx.cwd;
     sessionName = pi.getSessionName();
     syncSessionTitle(ctx);
     clearSpinnerTimer();
-    clearProgressKeepaliveTimer();
     if (isBusy() && !hasPendingPrompts()) {
-      setProgress(3);
       startSpinnerTimer(ctx);
-      startProgressKeepaliveTimer();
     }
   });
 
@@ -359,8 +286,6 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_shutdown", async (_event, ctx) => {
     clearSpinnerTimer();
-    clearProgressKeepaliveTimer();
-    clearCompletionTimer();
     isWorking = false;
     currentTool = undefined;
     pendingPromptCount = 0;
@@ -368,8 +293,9 @@ export default function (pi: ExtensionAPI) {
     activeReviewSessions.delete(sessionKey);
     if (currentSessionKey === sessionKey) {
       currentSessionKey = undefined;
+      sessionCwd = undefined;
+      sessionName = undefined;
     }
     latestCtx = undefined;
-    setProgress(0);
   });
 }
