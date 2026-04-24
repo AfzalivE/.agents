@@ -4,13 +4,26 @@
  * Public Pi APIs only expose a boolean tool expansion state. To get an exact
  * three-mode `ctrl+o` cycle (standard -> expanded -> collapsed -> standard),
  * this extension patches Pi's interactive mode and tool row components.
+ *
+ * The selected mode is persisted in `~/.pi/agent/command-preview.json`.
  */
 
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionUIContext } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
+
+// --- Constants ---
+
+const DEFAULT_MODE: ToolOutputMode = "standard";
+const PATCH_STATE_KEY = "__afzal_pi_tri_state_tool_mode__";
+const CONFIG_PATH = path.join(
+  process.env.PI_CODING_AGENT_DIR ?? path.join(process.env.HOME ?? ".", ".pi", "agent"),
+  "command-preview.json",
+);
+
+// --- Types ---
 
 type DistModulePath =
   | "./modes/interactive/interactive-mode.js"
@@ -18,6 +31,10 @@ type DistModulePath =
   | "./modes/interactive/components/bash-execution.js";
 
 type ToolOutputMode = "standard" | "expanded" | "collapsed";
+
+type CommandPreviewConfig = {
+  mode: ToolOutputMode;
+};
 
 type ContainerLike = {
   children: unknown[];
@@ -59,17 +76,17 @@ type PatchState = {
   interactiveModePatched?: boolean;
   toolExecutionPatched?: boolean;
   bashExecutionPatched?: boolean;
+  booleanSyncSuppressDepth?: number;
 };
 
-const PATCH_STATE_KEY = "__afzal_pi_tri_state_tool_mode__";
-const INTERNAL_MODE_GUARD_KEY = "__afzal_pi_tri_state_internal_set__";
+// --- Helpers ---
 
 function getPatchState(): PatchState {
   const globalRecord = globalThis as Record<string, unknown>;
   const existing = globalRecord[PATCH_STATE_KEY];
   if (existing && typeof existing === "object") return existing as PatchState;
 
-  const state: PatchState = { mode: "standard" };
+  const state: PatchState = { mode: DEFAULT_MODE };
   globalRecord[PATCH_STATE_KEY] = state;
   return state;
 }
@@ -85,6 +102,45 @@ function resolveInternalModule(modulePath: DistModulePath): string {
   return pathToFileURL(path.join(distDir, modulePath)).href;
 }
 
+function isToolOutputMode(value: unknown): value is ToolOutputMode {
+  return value === "standard" || value === "expanded" || value === "collapsed";
+}
+
+function loadModeFromConfig(): ToolOutputMode {
+  try {
+    const raw = fs.readFileSync(CONFIG_PATH, "utf8");
+    const parsed = JSON.parse(raw) as Partial<CommandPreviewConfig>;
+    return isToolOutputMode(parsed.mode) ? parsed.mode : DEFAULT_MODE;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT") {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[command-preview] Failed to load ${CONFIG_PATH}: ${message}`);
+    }
+
+    return DEFAULT_MODE;
+  }
+}
+
+function saveModeToConfig(mode: ToolOutputMode): void {
+  try {
+    fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
+    fs.writeFileSync(CONFIG_PATH, `${JSON.stringify({ mode }, null, 2)}\n`, "utf8");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[command-preview] Failed to save ${CONFIG_PATH}: ${message}`);
+  }
+}
+
+function setMode(mode: ToolOutputMode, options?: { persist?: boolean }): void {
+  const state = getPatchState();
+  state.mode = mode;
+
+  if (options?.persist) {
+    saveModeToConfig(mode);
+  }
+}
+
 function nextToolOutputMode(mode: ToolOutputMode): ToolOutputMode {
   switch (mode) {
     case "standard":
@@ -96,8 +152,30 @@ function nextToolOutputMode(mode: ToolOutputMode): ToolOutputMode {
   }
 }
 
-function syncModeFromBoolean(expanded: boolean): void {
-  getPatchState().mode = expanded ? "expanded" : "standard";
+function syncModeFromBoolean(expanded: boolean, options?: { persist?: boolean }): void {
+  setMode(expanded ? "expanded" : "standard", options);
+}
+
+function withBooleanSyncSuppressed<T>(run: () => T): T {
+  const state = getPatchState();
+  state.booleanSyncSuppressDepth = (state.booleanSyncSuppressDepth ?? 0) + 1;
+
+  try {
+    return run();
+  } finally {
+    state.booleanSyncSuppressDepth -= 1;
+  }
+}
+
+function isBooleanSyncSuppressed(): boolean {
+  return (getPatchState().booleanSyncSuppressDepth ?? 0) > 0;
+}
+
+function applyMode(ui: ExtensionUIContext, mode: ToolOutputMode): void {
+  setMode(mode);
+  withBooleanSyncSuppressed(() => {
+    ui.setToolsExpanded(mode === "expanded");
+  });
 }
 
 function isCollapsedMode(): boolean {
@@ -160,28 +238,25 @@ async function patchInteractiveMode(): Promise<void> {
   const originalSetToolsExpanded = prototype.setToolsExpanded;
 
   prototype.setToolsExpanded = function patchedSetToolsExpanded(
-    this: InteractiveModePrototype & Record<string, unknown>,
+    this: InteractiveModePrototype,
     expanded: boolean,
   ): void {
-    if (!this[INTERNAL_MODE_GUARD_KEY]) {
-      syncModeFromBoolean(expanded);
+    if (!isBooleanSyncSuppressed()) {
+      syncModeFromBoolean(expanded, { persist: true });
     }
 
     originalSetToolsExpanded.call(this, expanded);
   };
 
   prototype.toggleToolOutputExpansion = function patchedToggleToolOutputExpansion(
-    this: InteractiveModePrototype & Record<string, unknown>,
+    this: InteractiveModePrototype,
   ): void {
-    const patchState = getPatchState();
-    patchState.mode = nextToolOutputMode(patchState.mode);
+    const nextMode = nextToolOutputMode(getPatchState().mode);
+    setMode(nextMode, { persist: true });
 
-    this[INTERNAL_MODE_GUARD_KEY] = true;
-    try {
-      originalSetToolsExpanded.call(this, patchState.mode === "expanded");
-    } finally {
-      this[INTERNAL_MODE_GUARD_KEY] = false;
-    }
+    withBooleanSyncSuppressed(() => {
+      originalSetToolsExpanded.call(this, nextMode === "expanded");
+    });
   };
 
   state.interactiveModePatched = true;
@@ -243,6 +318,8 @@ async function patchBashExecutionComponent(): Promise<void> {
   state.bashExecutionPatched = true;
 }
 
+// --- Extension entrypoint ---
+
 export default async function commandPreviewExtension(pi: ExtensionAPI): Promise<void> {
   await Promise.all([
     patchInteractiveMode(),
@@ -250,7 +327,13 @@ export default async function commandPreviewExtension(pi: ExtensionAPI): Promise
     patchBashExecutionComponent(),
   ]);
 
-  pi.on("session_start", async (_event, ctx) => {
-    syncModeFromBoolean(ctx.ui.getToolsExpanded());
+  pi.on("session_start", (_event, ctx) => {
+    const mode = loadModeFromConfig();
+    if (!ctx.hasUI) {
+      setMode(mode);
+      return;
+    }
+
+    applyMode(ctx.ui, mode);
   });
 }
