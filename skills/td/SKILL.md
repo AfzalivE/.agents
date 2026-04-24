@@ -5,21 +5,26 @@ description: "Todoist CLI for task and project management — tasks, projects, s
 
 # Todoist CLI (`td`)
 
-## Global Flags
+Validated against CLI version: `1.40.0`
 
-| Flag | Purpose |
-|------|---------|
-| `--json` | Output as JSON |
-| `--ndjson` | Output as newline-delimited JSON |
-| `--full` | Include all fields in JSON output (default shows essential fields) |
-| `--no-spinner` | Suppress loading animations |
-| `-v` to `-vvvv` | Increase verbosity (up to 4 levels) |
+Use CLI help as the source of truth when flags conflict with this skill:
+
+```bash
+td <command> --help
+```
+
+## Common flags
+
+- UX: `--no-spinner`, `--progress-jsonl [path]`, `-v` to `-vvvv`, `--accessible`, `--quiet`
+- Output on most read commands: `--json`, `--ndjson`, `--full`
+- Pagination on list commands: `--limit <n>`, `--cursor <cursor>`, `--all`
+- Render control on task/text views: `--raw`
 
 Always use `--json` or `--ndjson` for programmatic parsing.
 
-**Important:** Agents should use `td task add` (structured flags), not `td add` (natural language shorthand).
+**Agent rule:** use `td task add`, not `td add`.
 
-## Quick Reference
+## Quick reference
 
 | Task | Command |
 |------|---------|
@@ -28,253 +33,160 @@ Always use `--json` or `--ndjson` for programmatic parsing.
 | Inbox | `td inbox` |
 | Add task | `td task add "content" --due tomorrow --priority p1 --project MyProject` |
 | Complete task | `td task complete <ref>` |
+| Reschedule recurring task | `td task reschedule <ref> <date>` |
 | List by project | `td task list --project "ProjectName"` |
 | Search with filter | `td task list --filter "today & p1"` |
 | View task | `td task view <ref>` |
-| View by URL | `td view <url>` |
+| View any Todoist URL | `td view <url>` |
 
-## Quick Views
+## Daily views
 
-### Today
-
-```
+```bash
 td today [options]
-```
-
-Shows tasks due today and overdue. Default: only tasks assigned to me or unassigned.
-
-| Option | Description |
-|--------|-------------|
-| `--any-assignee` | Show tasks assigned to anyone |
-| `--workspace <name>` | Filter to workspace |
-| `--personal` | Filter to personal projects |
-| `--show-urls` | Include web app URLs |
-
-### Upcoming
-
-```
 td upcoming [days] [options]
-```
-
-Tasks due in next N days (default: 7). Same options as `today`.
-
-### Inbox
-
-```
 td inbox [options]
-```
-
-| Option | Description |
-|--------|-------------|
-| `--priority <p1-p4>` | Filter by priority |
-| `--due <date>` | Filter by due date (`today`, `overdue`, or `YYYY-MM-DD`) |
-
-### Completed
-
-```
 td completed [options]
 ```
 
-| Option | Description |
-|--------|-------------|
-| `--since <date>` | Start date (default: today) |
-| `--until <date>` | End date (default: tomorrow) |
-| `--project <name>` | Filter by project |
+- `today` / `upcoming`: `--any-assignee`, `--workspace <name>`, `--personal`, `--show-urls`
+- `inbox`: `--priority <p1-p4>`, `--due <date>`, `--show-urls`
+- `completed`: `--since <date>`, `--until <date>`, `--project <name>`, `--show-urls`
 
 ## Tasks (`td task`)
 
-### Add
-
-```
-td task add [content] [options]
-```
-
-| Option | Description |
-|--------|-------------|
-| `--due <date>` | Due date (natural language or `YYYY-MM-DD`) |
-| `--deadline <date>` | Deadline date (`YYYY-MM-DD`) |
-| `--priority <p1-p4>` | Priority (`p1` = highest/urgent, `p4` = lowest/default) |
-| `--project <name>` | Project name or `id:xxx` |
-| `--section <ref>` | Section (name with `--project`, or `id:xxx`) |
-| `--labels <a,b>` | Comma-separated labels |
-| `--parent <ref>` | Parent task reference |
-| `--description <text>` | Task description |
-| `--assignee <ref>` | Assign to user (name, email, `id:xxx`, or `"me"`) |
-| `--duration <time>` | Duration (e.g., `30m`, `1h`, `2h15m`) |
-
-### List
-
-```
+```bash
 td task list [options]
-```
-
-| Option | Description |
-|--------|-------------|
-| `--project <name>` | Filter by project name or `id:xxx` |
-| `--parent <ref>` | Filter subtasks of a parent |
-| `--label <name>` | Filter by label (comma-separated for multiple) |
-| `--priority <p1-p4>` | Filter by priority |
-| `--due <date>` | Filter by due date (`today`, `overdue`, or `YYYY-MM-DD`) |
-| `--filter <query>` | Raw Todoist filter query |
-| `--assignee <ref>` | Filter by assignee (`me` or `id:xxx`) |
-| `--unassigned` | Only unassigned tasks |
-| `--workspace <name>` | Filter to workspace |
-| `--personal` | Filter to personal projects |
-| `--show-urls` | Include web app URLs |
-
-### View
-
-```
-td task view [ref] [--json] [--full] [--raw]
-```
-
-### Update
-
-```
+td task view [ref]
+td task add [content] [options]
 td task update [ref] [options]
-```
-
-| Option | Description |
-|--------|-------------|
-| `--content <text>` | New content |
-| `--due <date>` | New due date |
-| `--deadline <date>` | New deadline (`YYYY-MM-DD`) |
-| `--no-deadline` | Remove deadline |
-| `--priority <p1-p4>` | New priority |
-| `--labels <a,b>` | New labels (replaces existing) |
-| `--description <text>` | New description |
-| `--assignee <ref>` | Assign to user |
-| `--unassign` | Remove assignee |
-| `--duration <time>` | Duration |
-
-### Complete / Uncomplete
-
-```
-td task complete [ref] [--forever]   # --forever stops recurrence
-td task uncomplete [ref]             # Reopen (requires id:xxx)
-```
-
-### Move
-
-```
+td task complete [ref] [--forever]
+td task uncomplete [ref]
 td task move [ref] [options]
-```
-
-| Option | Description |
-|--------|-------------|
-| `--project <ref>` | Target project |
-| `--section <ref>` | Target section |
-| `--parent <ref>` | Parent task |
-| `--no-parent` | Remove parent (move to project root) |
-| `--no-section` | Remove section |
-
-### Delete / Browse
-
-```
+td task reschedule [ref] [date]
 td task delete [ref]
-td task browse [ref]    # Open in browser
+td task browse [ref]
 ```
+
+### Common task options
+
+- `add`
+  - `--due <date>`, `--deadline <date>`, `--priority <p1-p4>`
+  - `--project <name>`, `--section <ref>`, `--parent <ref>`
+  - `--labels <a,b>`, `--description <text>`, `--stdin`
+  - `--assignee <ref>`, `--duration <time>`
+  - `--uncompletable`, `--order <number>`, `--json`, `--dry-run`
+- `list`
+  - `--project <name>`, `--parent <ref>`, `--label <name>`
+  - `--priority <p1-p4>`, `--due <date>`, `--filter <query>`
+  - `--assignee <ref>`, `--unassigned`, `--workspace <name>`, `--personal`, `--show-urls`
+- `update`
+  - `--content <text>`, `--due <date>`, `--deadline <date>`, `--no-deadline`
+  - `--priority <p1-p4>`, `--labels <a,b>`, `--description <text>`, `--stdin`
+  - `--assignee <ref>`, `--unassign`, `--duration <time>`
+  - `--uncompletable`, `--completable`, `--order <number>`, `--json`, `--dry-run`
+- `move`
+  - `--project <ref>`, `--section <ref>`, `--parent <ref>`, `--no-parent`, `--no-section`, `--dry-run`
+- `complete`
+  - `--forever` permanently stops recurrence
+- `reschedule`
+  - Preserves recurrence; supports `--json` and `--dry-run`
 
 ## Projects (`td project`)
 
-```
-td project list [--json]
+```bash
+td project list
 td project view [ref]
+td project collaborators [ref]
 td project create [options]
 td project update [ref] [options]
 td project archive [ref]
 td project unarchive [ref]
-td project collaborators [ref]
-td project delete [ref]            # Must have no uncompleted tasks
+td project delete [ref]
 td project browse [ref]
+td project move [ref] [options]
+td project archived-count
+td project permissions
+td project join <id>
+td project progress [ref]
+td project health [ref]
+td project health-context [ref]
+td project activity-stats [ref]
+td project analyze-health [ref]
 ```
 
-## Sections (`td section`)
+### Common project options
 
-```
-td section list [project]
-td section create [options]
-td section update [id]
-td section delete [id]
-td section browse [id]
-```
+- `list`: `--personal`, `--show-urls`
+- `view`: `--detailed`, `--show-urls`
+- `create` / `update`
+  - `--name <name>`, `--color <color>`, `--favorite`
+  - `--view-style list|board|calendar`
+  - `create` also supports `--parent <ref>`
+  - `update` also supports `--no-favorite`
+  - both support `--json` and `--dry-run`
+- `move`
+  - `--to-workspace <ref>`, `--to-personal`
+  - `--folder <ref>`, `--visibility restricted|team|public`
+  - `--yes`, `--dry-run`
+- Analysis / reporting
+  - `progress`, `health`, `health-context`, `activity-stats`, `analyze-health`
 
-## Labels (`td label`)
+## Other entities
 
-```
-td label list
-td label view [ref]
-td label create [options]
-td label update [ref]
-td label delete [name]
-td label browse [ref]
-```
+- `td section`
+  - `list`, `create`, `update`, `delete`, `archive`, `unarchive`, `browse`
+- `td label`
+  - `list`, `view`, `create`, `update`, `delete`, `browse`
+  - `create`: `--name <name>`, `--color <color>`, `--favorite`, `--json`, `--dry-run`
+- `td comment`
+  - `list`, `add`, `update`, `delete`, `view`, `browse`
+  - `add`: `--project`, `--content <text>`, `--stdin`, `--file <path>`, `--json`, `--dry-run`
+- `td reminder`
+  - `list`, `add`, `update`, `delete`
+  - `add`: `--task <ref>`, `--before <duration>`, `--at <datetime>`, `--json`, `--dry-run`
+- `td filter`
+  - `list`, `create`, `update`, `delete`, `view|show`, `browse`
+  - `create`: `--name <name>`, `--query <query>`, `--color <color>`, `--favorite`, `--json`, `--dry-run`
+- `td attachment`
+  - `view [url]`
+- `td template`
+  - `export-file`, `export-url`, `create`, `import-file`, `import-id`
 
-## Comments (`td comment`)
+## Workspaces, account, and activity
 
-```
-td comment list [ref]              # Task comments (--project for project comments)
-td comment add [ref] [options]
-td comment update [id]
-td comment delete [id]
-td comment view [id]
-td comment browse [id]
-```
+```bash
+td workspace list
+td workspace view [ref]
+td workspace projects [ref]
+td workspace users [ref]
+td workspace insights [ref]
 
-## Reminders (`td reminder`)
-
-```
-td reminder list [task]
-td reminder add [task] [options]
-td reminder update [id]
-td reminder delete [id]
-```
-
-## Filters (`td filter`)
-
-```
-td filter list
-td filter create [options]
-td filter update [ref]
-td filter delete [ref]
-td filter view [ref]               # Shows tasks matching the filter
-td filter browse [ref]
-```
-
-## Activity
-
-```
 td activity [options]
+td settings view|update|themes
+td notification list|view|accept|reject|read|unread
+td stats
+td stats goals
+td stats vacation
+td auth login|logout|status|token
+td update [--check|--channel]
+td update switch
+td skill list|install|update|uninstall
+td completion install|uninstall
+td view <url>
 ```
 
-| Option | Description |
-|--------|-------------|
-| `--since <date>` | Start date (`YYYY-MM-DD`) |
-| `--until <date>` | End date |
-| `--type <type>` | `task`, `comment`, or `project` |
-| `--event <type>` | `added`, `completed`, `updated`, `deleted`, `uncompleted`, `archived`, `unarchived`, `shared`, `left`, `reordered`, `moved` |
-| `--project <name>` | Filter by project |
-| `--by <user>` | Filter by initiator (`me` for yourself) |
+### Activity filters
 
-## Other
-
-| Command | Purpose |
-|---------|---------|
-| `td stats` | Productivity stats and karma |
-| `td stats goals` | Update daily/weekly goals |
-| `td stats vacation` | Toggle vacation mode |
-| `td workspace list/view/projects/users` | Workspace management |
-| `td settings view/update/themes` | User settings |
-| `td notification list/view/accept/reject/read/unread` | Notifications & invitations |
-| `td view <url>` | View any Todoist entity by URL |
-| `td add "natural language"` | Quick add (human shorthand, not for agents) |
-| `td skill list/install/update/uninstall` | Agent skill integrations |
-| `td completion` | Shell completions |
+- `--since <date>`, `--until <date>`
+- `--type task|comment|project`
+- `--event added|completed|updated|deleted|uncompleted|archived|unarchived|shared|left|reordered|moved`
+- `--project <name>`, `--by <user>`
 
 ## Tips
 
-- Priority: `p1` = highest (urgent), `p2` = high, `p3` = medium, `p4` = lowest/default.
-- `td task list --filter` accepts raw Todoist filter syntax (e.g., `"today & p1"`, `"overdue | no date"`).
-- `td today` and `td upcoming` default to only your tasks + unassigned; use `--any-assignee` for all.
-- `--show-urls` adds web app links to task output — useful for sharing.
-- Refs can be task names, IDs (`id:xxx`), or URLs.
+- Priority mapping: `p1` highest, `p4` lowest/default.
+- `td task list --filter` accepts raw Todoist filter syntax.
+- Prefer `td task reschedule` for recurring tasks; it preserves recurrence semantics.
+- `--show-urls` is useful when you need shareable links.
+- Refs are usually names, `id:xxx`, or Todoist URLs depending on the command.
+- Some commands require IDs specifically, for example `td task uncomplete id:123`.
