@@ -2,6 +2,8 @@
 
 Mirror a linked Git worktree into the repo's main worktree while you work from the linked tree in Pi.
 
+![Spotlight extension screenshot](./screenshot.jpg)
+
 ## Requirements
 
 - Run Pi inside a linked worktree created with `git worktree add`
