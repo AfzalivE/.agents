@@ -41,16 +41,24 @@ By default it sets up all agents. Pass `--codex`, `--claude`, and/or `--pi` to l
 | Skill | Description |
 |-------|-------------|
 | `browser-tools` | Interactive browser automation via Chrome DevTools Protocol |
+| `cald` | Apple Calendar CLI for listing, reading, and creating calendar events |
+| `daily-agenda` | Retrieve the active daily agenda against the current local time |
+| `dream` | Nightly vault maintenance — consolidate, reorganize, and weaken stale content |
 | `gh` | GitHub CLI reference for issues, PRs, Actions, search, and raw API |
 | `git-clean-history` | Reimplement a branch on a fresh branch off `main` with a clean commit history |
 | `git-commit` | Tidy, focused commits with clear rationale in messages |
+| `git-rebase-check` | Verify that a rebased branch preserved the same cumulative patch |
 | `git-worktree` | Manage git worktrees for multiple branches in separate directories |
 | `homeassistant-ops` | Operate a Home Assistant instance via REST/WebSocket APIs |
+| `material-3` | Implement Google's Material Design 3 (Material You) UI system |
 | `ms-openapi-explorer` | Explore Microsoft Graph v1.0 OpenAPI endpoints, schemas, and permissions |
 | `openscad` | Create and render OpenSCAD 3D models, export STL |
 | `oracle` | Second opinion from another LLM for debugging, refactors, design, or code reviews |
 | `qmd` | Local semantic search engine for markdown knowledge bases |
+| `review-breaker` | Break a large review branch into smaller, reviewer-friendly commits |
 | `sentry` | Sentry CLI reference for issues, events, logs, and traces |
+| `td` | Todoist CLI reference for task and project management |
+| `tw` | Twist CLI reference for team messaging |
 | `update-changelog` | Update CHANGELOG.md following Keep a Changelog |
 | `web-design` | Distinctive, production-ready web interfaces |
 
@@ -61,6 +69,7 @@ By default it sets up all agents. Pass `--codex`, `--claude`, and/or `--pi` to l
 | answer | `/answer` | Extract and interactively answer agent questions |
 | branch-term | `/branch` | Open a new terminal on the current session's git branch |
 | btw | `/btw` | Run a one-off side request with read-only tools and no context persistence |
+| command-preview | `ctrl+o` | Cycle tool rows through standard, expanded, and collapsed output modes |
 | converge | `/converge` | Compare multiple engineer plans/specs and synthesize one recommended plan |
 | openai-fast | `/fast` | Toggle priority service tier for supported OpenAI models |
 | ghostty |  | Ghostty tab title enhancements while the agent is working, waiting, or idle |
@@ -74,6 +83,7 @@ By default it sets up all agents. Pass `--codex`, `--claude`, and/or `--pi` to l
 | openai-verbosity | `/verbosity` | Set verbosity for supported OpenAI models |
 | review | `/review`, `/triage` | Multi-focus review and PR feedback triage for PRs, branches, commits, and local changes, with integrated follow-up fixes |
 | sandbox | `/sandbox` | OS-level sandboxing for bash commands with runtime overrides |
+| spotlight | `/spotlight` | Mirror a linked git worktree into the main worktree |
 | usage | `/usage` | Historical provider usage breakdown with all-provider history and live quota snapshots |
 | telegram | `/telegram` | Interact with Pi via a Telegram bot and local daemon |
 | todo | `/todo` | Todoist-backed tasks with offline outbox sync for single or multi-session work |
