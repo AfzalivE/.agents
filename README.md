@@ -61,7 +61,7 @@ By default it sets up all agents. Pass `--codex`, `--claude`, and/or `--pi` to l
 | git-diff-stats |  | Status bar diff stats for local changes in the current repo |
 | git-pr-status |  | Status bar PR number and link for the current branch |
 | insights | `/insights` | Analyze Pi sessions and suggest reusable instructions, templates, skills, and extensions |
-| interlude | `ctrl+x` <small>(configurable)</small> | Stash the current message draft, send one interlude message, then restore the draft |
+| interlude | `alt+x` <small>(configurable)</small> | Stash the current message draft, send one interlude message, then restore the draft |
 | loop | `/loop` | Repeat a prompt until the agent signals success |
 | memory | `/memory` | Opt-in project-local memory for learning and continuity across sessions |
 | notify |  | Terminal notification when the agent is waiting for input |
