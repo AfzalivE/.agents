@@ -9,6 +9,6 @@
     ]
   },
   "dependencies": {
-    "@anthropic-ai/sandbox-runtime": "^0.0.37"
+    "@anthropic-ai/sandbox-runtime": "^0.0.49"
   }
 }
