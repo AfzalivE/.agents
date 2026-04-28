@@ -69,6 +69,14 @@ import {
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { type BashOperations, createBashTool } from "@mariozechner/pi-coding-agent";
 import { findBlockedCommand } from "./command-policy.js";
+import type {
+  ListOp,
+  PromptMode,
+  SandboxEventBase,
+  SandboxEventOutcome,
+  ViolationResolution as SharedViolationResolution,
+  ViolationResolutionKind as SharedViolationResolutionKind,
+} from "./types.js";
 
 // --- Constants ---
 
@@ -110,8 +118,6 @@ const GIT_FILESYSTEM_PATHS_CACHE = new Map<string, GitFilesystemPaths | null>();
 
 // --- Types ---
 
-type PromptMode = "interactive" | "non-interactive";
-
 type SandboxBypassReason = "no-sandbox-flag" | "config-disabled" | "missing-dependencies";
 type SandboxBlockedReason = "unsupported-platform" | "init-failed";
 
@@ -150,32 +156,20 @@ type SandboxEventReason =
   | "already-approved-still-failed"
   | "blocked-command"
   | "unknown";
-type SandboxEventOutcome = "blocked" | "allowed";
 type SandboxConfigPathStatus = "loaded" | "parse-error";
 type SandboxConfigPathLabel = "Global" | "Project" | "Override";
 
 type PromptStatus = "completed" | "error";
 type UiLevel = "info" | "warning" | "error";
 
-type ListOp = "add" | "remove";
 type NetworkList = "allow" | "deny";
 type FilesystemList = "deny-read" | "allow-write" | "deny-write";
 
 type FilesystemViolationKind = "read" | "write" | "unknown";
 type FilesystemReadAccess = "metadata" | "data" | "unknown";
-type FilesystemViolationResolutionKind = "allow-retry" | "allow-adapt" | "deny";
+export type FilesystemViolationResolutionKind = SharedViolationResolutionKind;
 
-interface SandboxEvent {
-  timestamp: number;
-  kind: SandboxEventKind;
-  outcome: SandboxEventOutcome;
-  reason: SandboxEventReason;
-  target?: string;
-  command?: string;
-  cwd?: string;
-  summary: string;
-  suggestedCommand?: string;
-}
+interface SandboxEvent extends SandboxEventBase<SandboxEventKind, SandboxEventReason> {}
 
 interface SandboxConfigPath {
   label: SandboxConfigPathLabel;
@@ -214,16 +208,7 @@ interface FilesystemViolation {
   readAccess?: FilesystemReadAccess;
 }
 
-type FilesystemViolationResolution =
-  | {
-      kind: "allow-retry";
-      message: string;
-      retrySuccessMessage: string;
-      retryFailureMessage: string;
-      retrySkippedMessage: string;
-    }
-  | { kind: "allow-adapt"; message: string }
-  | { kind: "deny"; message: string };
+type FilesystemViolationResolution = SharedViolationResolution;
 
 // --- Helpers ---
 
