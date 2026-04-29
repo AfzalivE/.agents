@@ -1,0 +1,28 @@
+{
+  "lastChangelogVersion": "0.70.2",
+  "defaultProvider": "openai-codex",
+  "defaultModel": "gpt-5.5",
+  "defaultThinkingLevel": "xhigh",
+  "autocompleteMaxVisible": 10,
+  "editorPaddingX": 1,
+  "steeringMode": "one-at-a-time",
+  "followUpMode": "one-at-a-time",
+  "compaction": {
+    "enabled": true
+  },
+  "hideThinkingBlock": false,
+  "doubleEscapeAction": "tree",
+  "enabledModels": [
+    "openai-codex/gpt-5.5",
+    "openai-codex/gpt-5.3-codex-spark",
+    "github-copilot/claude-opus-4.7"
+  ],
+  "transport": "auto",
+  "theme": "dark",
+  "packages": [
+    "npm:tau-all-agent"
+  ],
+  "terminal": {
+    "showTerminalProgress": false
+  }
+}

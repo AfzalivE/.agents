@@ -68,9 +68,7 @@
       "~/.cache",
       "~/.docker",
       "~/.npm",
-      "~/.pi/agent/*.lock",
-      "~/.codex*",
-      "~/.claude*"
+      "~/.pi/agent/*.lock"
     ]
   },
   "enableWeakerNestedSandbox": false,

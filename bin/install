@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+PI_AGENT_DIR="${HOME}/.pi/agent"
+
+link_file() {
+  local source="$1"
+  local target="$2"
+
+  mkdir -p "$(dirname "${target}")"
+
+  if [[ -L "${target}" ]]; then
+    local current
+    current="$(readlink "${target}")"
+    if [[ "${current}" == "${source}" ]]; then
+      return 0
+    fi
+    rm "${target}"
+  elif [[ -e "${target}" ]]; then
+    if cmp -s "${source}" "${target}"; then
+      rm "${target}"
+    else
+      local backup="${target}.bak.$(date +%Y%m%d%H%M%S)"
+      mv "${target}" "${backup}"
+      printf 'Backed up %s to %s\n' "${target}" "${backup}"
+    fi
+  fi
+
+  ln -s "${source}" "${target}"
+  printf 'Linked %s -> %s\n' "${target}" "${source}"
+}
+
+link_file "${ROOT}/AGENTS.md" "${PI_AGENT_DIR}/AGENTS.md"
+
+for source in "${ROOT}"/pi/agent/*.json; do
+  [[ -f "${source}" ]] || continue
+  link_file "${source}" "${PI_AGENT_DIR}/$(basename "${source}")"
+done
