@@ -221,3 +221,5 @@ skills/doist
 agent-brain/
 logs/
 /.agents/memory
+
+tau
