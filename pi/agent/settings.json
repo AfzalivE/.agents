@@ -18,7 +18,7 @@
     "google-antigravity/gemini-3.1-pro-high"
   ],
   "transport": "auto",
-  "theme": "dark",
+  "theme": "tau-dark",
   "packages": [
     "npm:tau-all-agent"
   ],
