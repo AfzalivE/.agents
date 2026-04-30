@@ -15,7 +15,7 @@
   "enabledModels": [
     "openai-codex/gpt-5.5",
     "openai-codex/gpt-5.3-codex-spark",
-    "github-copilot/claude-opus-4.7"
+    "google-antigravity/gemini-3.1-pro-high"
   ],
   "transport": "auto",
   "theme": "dark",
