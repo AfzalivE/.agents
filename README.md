@@ -6,11 +6,11 @@ Reusable agent harness shared across Codex, Claude, and Pi. Everything lives her
 
 ```
 AGENTS.md              Shared base instructions (symlinked into each agent folder)
-skills/                Skill source of truth (SKILL.md + optional scripts/assets)
+skills/                Local symlink to your Tau fork's skills/ directory
 agent-brain/           Long-term memory vault (Obsidian, kept in a separate private repo)
 pi/extensions/         Pi-specific extensions
 pi/agent/*.json        Repo-managed Pi JSON defaults
-bin/setup              Set up selected Codex, Claude, and Pi configuration, skills, extensions, and dependencies
+bin/setup              Set up selected Codex, Claude, and Pi configuration, the local skills symlink, and dependencies
 ```
 
 ## Installing
@@ -19,7 +19,7 @@ bin/setup              Set up selected Codex, Claude, and Pi configuration, skil
 git clone https://github.com/goncalossilva/.agents.git ~/.agents
 ```
 
-`AGENTS.md` is symlinked into each agent config. Skills are symlinked to Claude, while Codex and Pi auto-discover them from `~/.agents/skills`.
+`AGENTS.md` is symlinked into each agent config. `bin/setup` also keeps `~/.agents/skills` pointed at your Tau fork's `skills/` directory. Codex and Pi use that path directly, Claude gets per-skill symlinks from it, and the Tau package install is still used for Pi extensions/themes.
 
 | Content | Codex | Claude | Pi |
 |---------|-------|--------|----|
@@ -28,7 +28,7 @@ git clone https://github.com/goncalossilva/.agents.git ~/.agents
 | Extensions | — | — | `~/.pi/agent/extensions/` |
 | JSON config | — | — | `~/.pi/agent/*.json` |
 
-`bin/setup` syncs the selected agent files and installs npm runtime dependencies for relevant packages.
+`bin/setup` syncs the selected agent files, points `~/.agents/skills` at Tau's `skills/`, and installs npm runtime dependencies for relevant packages.
 
 By default it sets up all agents. Pass `--codex`, `--claude`, and/or `--pi` to limit to those agents.
 
@@ -37,6 +37,8 @@ By default it sets up all agents. Pass `--codex`, `--claude`, and/or `--pi` to l
 ```
 
 ## Skills
+
+Shared reusable skills belong in your Tau fork so they flow through `~/.agents/skills` automatically. Keep truly private or non-shared skills outside that path.
 
 | Skill | Description |
 |-------|-------------|
@@ -92,7 +94,7 @@ By default it sets up all agents. Pass `--codex`, `--claude`, and/or `--pi` to l
 
 ## Brain
 
-The `agent-brain/` directory is an Obsidian vault that serves as long-term memory across sessions. It holds user-specific context — preferences, project notes, environment details, accumulated debugging insights — while general knowledge (CLI references, skill definitions) lives in `skills/`.
+The `agent-brain/` directory is an Obsidian vault that serves as long-term memory across sessions. It holds user-specific context — preferences, project notes, environment details, accumulated debugging insights — while general knowledge (CLI references, skill definitions) lives in your Tau fork's `skills/` directory, surfaced locally through `~/.agents/skills`.
 
 The brain is not included in this repo. To set up your own:
 

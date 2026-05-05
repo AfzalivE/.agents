@@ -1,34 +1,40 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Set up ~/.agents in coding agents via symlinks, then install runtime npm
-# dependencies for relevant repo packages.
+# Set up ~/.agents in coding agents, install Tau for Pi from a local checkout,
+# and install runtime npm dependencies for relevant repo packages.
 #
 # Source of truth:
 #   - ~/.agents/AGENTS.md                 (shared instructions)
-#   - ~/.agents/skills                    (Agent Skills standard)
-#   - ~/.agents/pi/extensions             (Pi-specific extensions)
+#   - ~/.agents/skills -> <Tau fork>/skills
 #   - ~/.agents/pi/agent/*.json           (Pi JSON config defaults)
+#   - ~/.agents/tau or $AGENTS_TAU_DIR    (local Tau checkout/fork for shared skills and Pi packages)
 #
 # Targets:
 #   - Codex:  ~/.codex/AGENTS.md
-#   - Claude: ~/.claude/CLAUDE.md + ~/.claude/skills
-#   - Pi:     ~/.pi/agent/AGENTS.md + ~/.pi/agent/extensions + ~/.pi/agent/*.json
+#   - Claude: ~/.claude/CLAUDE.md + ~/.claude/skills/<skill>
+#   - Pi:     ~/.pi/agent/AGENTS.md + ~/.pi/agent/*.json + local Tau package install
 #
 # Notes:
-#   - Pi and Codex auto-discover skills from ~/.agents/skills.
-#   - Pi does not auto-discover ~/.agents/AGENTS.md as global context.
+#   - Codex and Pi use ~/.agents/skills directly.
+#   - Claude gets per-skill symlinks into ~/.claude/skills.
+#   - Pi still needs the installed Tau package for extensions and themes.
+#   - This script keeps ~/.agents/skills pointed at the Tau fork's skills/ directory.
+#   - This script no longer syncs ~/.agents/pi/extensions into ~/.pi/agent/extensions.
 
 # --- Config ---
 readonly AGENTS_ROOT="${HOME}/.agents"
 readonly AGENTS_SKILLS_DIR="${AGENTS_ROOT}/skills"
 readonly AGENTS_INSTRUCTIONS_FILE="${AGENTS_ROOT}/AGENTS.md"
-readonly AGENTS_PI_EXTENSIONS_DIR="${AGENTS_ROOT}/pi/extensions"
 readonly AGENTS_PI_AGENT_DIR="${AGENTS_ROOT}/pi/agent"
+readonly AGENTS_PI_EXTENSIONS_DIR="${AGENTS_ROOT}/pi/extensions"
+readonly DEFAULT_TAU_HINT_DIR="${HOME}/Dev/ToolProjects/tau"
+readonly PI_PACKAGE_NAME="${AGENTS_PI_PACKAGE_NAME:-tau-all-agent}"
 
 readonly CLAUDE_SKILLS_DIR="${HOME}/.claude/skills"
 readonly PI_AGENT_DIR="${HOME}/.pi/agent"
 readonly PI_EXTENSIONS_DIR="${PI_AGENT_DIR}/extensions"
+readonly PI_SETTINGS_FILE="${PI_AGENT_DIR}/settings.json"
 
 readonly CODEX_INSTRUCTIONS_FILE="${HOME}/.codex/AGENTS.md"
 readonly CLAUDE_INSTRUCTIONS_FILE="${HOME}/.claude/CLAUDE.md"
@@ -42,6 +48,12 @@ SYNC_CODEX=0
 SYNC_CLAUDE=0
 SYNC_PI=0
 AGENT_FILTER_SET=0
+TAU_SOURCE_PATH=""
+TAU_DIR=""
+TAU_SKILLS_DIR=""
+PI_PACKAGE_DIR=""
+PI_PACKAGE_INSTALL_NEEDED=0
+
 
 declare -a PLAN_ACTIONS=()
 declare -a PLAN_DESTS=()
@@ -53,15 +65,17 @@ declare -a INSTALL_DIRS=()
 main() {
   parse_args "$@"
   apply_default_agent_selection
+  resolve_tau_paths
   validate_checkout_location
   validate_roots
   reset_sync_plan
   reset_dependency_plan
   plan_sync_changes
   plan_dependency_setup
+  plan_pi_package_install
   ensure_runtime_dependencies
 
-  if [[ "${#PLAN_ACTIONS[@]}" -eq 0 && "${#INSTALL_DIRS[@]}" -eq 0 ]]; then
+  if [[ "${#PLAN_ACTIONS[@]}" -eq 0 && "${#INSTALL_DIRS[@]}" -eq 0 && "${PI_PACKAGE_INSTALL_NEEDED}" -eq 0 ]]; then
     print_no_work
     return 0
   fi
@@ -76,6 +90,7 @@ main() {
   preflight_apply_roots
   run_dependency_setup
   apply_sync_plan
+  run_pi_package_install
   print_applied_summary
 }
 
@@ -130,6 +145,27 @@ apply_default_agent_selection() {
   fi
 }
 
+resolve_tau_paths() {
+  local candidate=""
+
+  if [[ -n "${AGENTS_TAU_DIR:-}" ]]; then
+    candidate="${AGENTS_TAU_DIR}"
+  elif [[ -e "${AGENTS_ROOT}/tau" ]]; then
+    candidate="${AGENTS_ROOT}/tau"
+  elif [[ -d "${DEFAULT_TAU_HINT_DIR}" ]]; then
+    candidate="${DEFAULT_TAU_HINT_DIR}"
+  fi
+
+  if [[ -z "${candidate}" ]]; then
+    return 0
+  fi
+
+  TAU_SOURCE_PATH="$(resolve_existing_path "${candidate}")"
+  TAU_DIR="${TAU_SOURCE_PATH}"
+  TAU_SKILLS_DIR="${TAU_SOURCE_PATH}/skills"
+  PI_PACKAGE_DIR="${TAU_SOURCE_PATH}/packages/${PI_PACKAGE_NAME}"
+}
+
 validate_checkout_location() {
   local checkout_root
   checkout_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -142,9 +178,36 @@ validate_checkout_location() {
 
 validate_roots() {
   validate_directory_root "${AGENTS_SKILLS_DIR}"
-  validate_directory_root "${AGENTS_PI_EXTENSIONS_DIR}"
   validate_directory_root "${AGENTS_PI_AGENT_DIR}"
   visit_selected_target_roots validate_directory_root
+  validate_tau_setup
+}
+
+validate_tau_setup() {
+  if [[ -z "${TAU_DIR}" ]]; then
+    echo "error: Tau checkout not found. Create ~/.agents/tau or set AGENTS_TAU_DIR." >&2
+    exit 1
+  fi
+
+  if [[ ! -f "${TAU_DIR}/package.json" ]]; then
+    echo "error: Tau checkout is missing package.json: $(format_home_path "${TAU_DIR}")" >&2
+    exit 1
+  fi
+
+  if [[ ! -d "${TAU_SKILLS_DIR}" ]]; then
+    echo "error: Tau checkout is missing skills/: $(format_home_path "${TAU_SKILLS_DIR}")" >&2
+    exit 1
+  fi
+
+  if [[ "${SYNC_PI}" -ne 1 ]]; then
+    return 0
+  fi
+
+  if [[ ! -d "${PI_PACKAGE_DIR}" || ! -f "${PI_PACKAGE_DIR}/package.json" ]]; then
+    echo "error: Pi package not found: $(format_home_path "${PI_PACKAGE_DIR}")" >&2
+    echo "hint: set AGENTS_PI_PACKAGE_NAME to a package under $(format_home_path "${TAU_DIR}/packages")" >&2
+    exit 1
+  fi
 }
 
 visit_selected_target_roots() {
@@ -160,7 +223,6 @@ visit_selected_target_roots() {
 
   if [[ "${SYNC_PI}" -eq 1 ]]; then
     "${callback}" "${PI_AGENT_DIR}"
-    "${callback}" "${PI_EXTENSIONS_DIR}"
   fi
 }
 
@@ -176,32 +238,36 @@ reset_sync_plan() {
 reset_dependency_plan() {
   INSTALL_COMMANDS=()
   INSTALL_DIRS=()
+  PI_PACKAGE_INSTALL_NEEDED=0
 }
 
 # --- Planning ---
 plan_sync_changes() {
+  plan_local_skills_sync
   plan_claude_skills_sync
   plan_instructions_sync
   plan_pi_json_sync
-  plan_pi_extensions_sync
   plan_claude_skills_prune
-  plan_pi_extensions_prune
   plan_pi_json_prune
+  plan_pi_extensions_prune
+}
+
+plan_local_skills_sync() {
+  plan_link "${TAU_SKILLS_DIR}" "${AGENTS_SKILLS_DIR}" dir
 }
 
 plan_claude_skills_sync() {
   [[ "${SYNC_CLAUDE}" -eq 1 ]] || return 0
-  [[ -d "${AGENTS_SKILLS_DIR}" ]] || return 0
 
   local skill_dir
-  for skill_dir in "${AGENTS_SKILLS_DIR}"/*; do
+  for skill_dir in "${TAU_SKILLS_DIR}"/*; do
     [[ -d "${skill_dir}" ]] || continue
 
     local skill_name
     skill_name="$(basename "${skill_dir}")"
     [[ "${skill_name}" == .* ]] && continue
 
-    plan_link "${skill_dir}" "${CLAUDE_SKILLS_DIR}/${skill_name}" dir
+    plan_link "${AGENTS_SKILLS_DIR}/${skill_name}" "${CLAUDE_SKILLS_DIR}/${skill_name}" dir
   done
 }
 
@@ -240,21 +306,6 @@ plan_pi_json_sync() {
   done
 }
 
-plan_pi_extensions_sync() {
-  [[ "${SYNC_PI}" -eq 1 ]] || return 0
-  [[ -d "${AGENTS_PI_EXTENSIONS_DIR}" ]] || return 0
-
-  local src
-  for src in "${AGENTS_PI_EXTENSIONS_DIR}"/*; do
-    is_syncable_pi_extension_source "${src}" || continue
-
-    local base
-    base="$(basename "${src}")"
-
-    plan_link "${src}" "${PI_EXTENSIONS_DIR}/${base}" any
-  done
-}
-
 plan_claude_skills_prune() {
   [[ "${PRUNE}" -eq 1 ]] || return 0
   [[ "${SYNC_CLAUDE}" -eq 1 ]] || return 0
@@ -268,26 +319,7 @@ plan_claude_skills_prune() {
     base="$(basename "${entry}")"
     [[ "${base}" == ".system" ]] && continue
 
-    if [[ ! -d "${AGENTS_SKILLS_DIR}/${base}" ]]; then
-      plan_remove "${entry}"
-    fi
-  done
-}
-
-plan_pi_extensions_prune() {
-  [[ "${PRUNE}" -eq 1 ]] || return 0
-  [[ "${SYNC_PI}" -eq 1 ]] || return 0
-  [[ -d "${PI_EXTENSIONS_DIR}" ]] || return 0
-
-  local entry
-  for entry in "${PI_EXTENSIONS_DIR}"/*; do
-    [[ -e "${entry}" || -L "${entry}" ]] || continue
-
-    local base
-    base="$(basename "${entry}")"
-    [[ "${base}" == "node_modules" ]] && continue
-
-    if ! is_syncable_pi_extension_source "${AGENTS_PI_EXTENSIONS_DIR}/${base}"; then
+    if [[ ! -d "${TAU_SKILLS_DIR}/${base}" ]]; then
       plan_remove "${entry}"
     fi
   done
@@ -321,32 +353,41 @@ plan_pi_json_prune() {
   done
 }
 
-plan_dependency_setup() {
-  plan_package_installs_under "${AGENTS_SKILLS_DIR}"
+plan_pi_extensions_prune() {
+  [[ "${PRUNE}" -eq 1 ]] || return 0
+  [[ "${SYNC_PI}" -eq 1 ]] || return 0
 
-  if [[ "${SYNC_PI}" -eq 1 ]]; then
-    plan_package_setup "${AGENTS_PI_EXTENSIONS_DIR}"
-    plan_package_installs_under "${AGENTS_PI_EXTENSIONS_DIR}" 1
+  if [[ -L "${PI_EXTENSIONS_DIR}" ]]; then
+    local existing_target
+    existing_target="$(readlink "${PI_EXTENSIONS_DIR}")"
+    if [[ "${existing_target}" == "${AGENTS_PI_EXTENSIONS_DIR}" ]]; then
+      plan_remove "${PI_EXTENSIONS_DIR}"
+    fi
   fi
 }
 
-plan_package_installs_under() {
-  local root="$1"
-  local skip_root="${2:-0}"
-  [[ -d "${root}" ]] || return 0
+plan_dependency_setup() {
+  plan_skill_package_setups "${TAU_SKILLS_DIR}"
 
-  local package_json
-  while IFS= read -r package_json; do
-    local package_dir
-    package_dir="$(dirname "${package_json}")"
+  if [[ -n "${TAU_DIR}" && ( "${SYNC_PI}" -eq 1 || "${SYNC_CLAUDE}" -eq 1 || "${SYNC_CODEX}" -eq 1 ) ]]; then
+    plan_package_setup "${TAU_DIR}"
+  fi
+}
 
-    if [[ "${skip_root}" -eq 1 && "${package_dir}" == "${root}" ]]; then
-      continue
-    fi
+plan_skill_package_setups() {
+  local skills_root="$1"
+  [[ -d "${skills_root}" ]] || return 0
+
+  local skill_dir
+  for skill_dir in "${skills_root}"/*; do
+    [[ -d "${skill_dir}" ]] || continue
+
+    local package_json="${skill_dir}/package.json"
+    [[ -f "${package_json}" ]] || continue
 
     package_has_runtime_dependencies "${package_json}" || continue
-    plan_package_setup "${package_dir}"
-  done < <(find "${root}" -path '*/node_modules' -prune -o -name package.json -print | sort)
+    plan_package_setup "${skill_dir}"
+  done
 }
 
 plan_package_setup() {
@@ -359,6 +400,20 @@ plan_package_setup() {
 
   INSTALL_DIRS+=("${package_dir}")
   INSTALL_COMMANDS+=("$(package_install_command "${package_dir}")")
+}
+
+plan_pi_package_install() {
+  [[ "${SYNC_PI}" -eq 1 ]] || return 0
+
+  if [[ -z "${PI_PACKAGE_DIR}" ]]; then
+    return 0
+  fi
+
+  if pi_package_is_installed "${PI_PACKAGE_DIR}"; then
+    return 0
+  fi
+
+  PI_PACKAGE_INSTALL_NEEDED=1
 }
 
 # --- Output and apply ---
@@ -381,6 +436,13 @@ print_plan() {
     fi
     print_dependency_plan
   fi
+
+  if [[ "${PI_PACKAGE_INSTALL_NEEDED}" -eq 1 ]]; then
+    if [[ "${#PLAN_ACTIONS[@]}" -gt 0 || "${#INSTALL_DIRS[@]}" -gt 0 ]]; then
+      echo
+    fi
+    print_pi_package_plan
+  fi
 }
 
 print_sync_plan() {
@@ -398,7 +460,7 @@ print_sync_plan() {
 
   local printed_group=0
   local group
-  for group in Codex Claude Pi; do
+  for group in .agents Codex Claude Pi; do
     if print_sync_group "${group}" "${printed_group}"; then
       printed_group=1
     fi
@@ -465,6 +527,20 @@ print_dependency_plan() {
 
   echo
   echo "Summary: ${total} $(pluralize "${total}" "package setup" "package setups") ($(install_summary))"
+}
+
+print_pi_package_plan() {
+  local header
+
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    header="Dry run: 1 planned Pi package install"
+  else
+    header="Pi package: 1 planned install"
+  fi
+
+  echo "${header}"
+  echo
+  printf '  pi install %s\n' "$(format_home_path "${PI_PACKAGE_DIR}")"
 }
 
 confirm_apply() {
@@ -542,13 +618,19 @@ run_package_installs() {
     echo "==> npm ${command} in $(format_repo_path "${dir}")"
     (
       cd "${dir}"
-      if [[ "${dir}" == "${AGENTS_PI_EXTENSIONS_DIR}" ]]; then
-        npm "${command}" --include=dev
-      else
-        npm "${command}"
-      fi
+      npm "${command}"
     )
   done
+}
+
+run_pi_package_install() {
+  if [[ "${PI_PACKAGE_INSTALL_NEEDED}" -eq 0 ]]; then
+    return 0
+  fi
+
+  echo
+  echo "==> pi install $(format_home_path "${PI_PACKAGE_DIR}")"
+  pi install "${PI_PACKAGE_DIR}"
 }
 
 print_applied_summary() {
@@ -559,29 +641,38 @@ print_applied_summary() {
   if [[ "${#INSTALL_DIRS[@]}" -gt 0 ]]; then
     echo "Installed ${#INSTALL_DIRS[@]} $(pluralize "${#INSTALL_DIRS[@]}" "package" "packages") ($(install_summary))."
   fi
+
+  if [[ "${PI_PACKAGE_INSTALL_NEEDED}" -eq 1 ]]; then
+    echo "Installed Pi package $(format_home_path "${PI_PACKAGE_DIR}")."
+  fi
 }
 
 # --- Low-level helpers ---
 usage() {
-  cat <<'EOF'
-	Set up ~/.agents in selected agent configs.
+  cat <<EOF
+Set up ~/.agents in selected agent configs.
 
 Usage:
   setup [--dry-run] [--yes] [--prune] [--codex] [--claude] [--pi]
 
 Options:
-  --dry-run   Print planned sync and npm install steps only
+  --dry-run   Print planned sync, npm install, and Pi package install steps only
   --yes       Apply without prompting
-  --prune     Remove skills and extensions from selected agent folders that are not present in ~/.agents
+  --prune     Remove Claude skills no longer present in Tau's skills/, stale Pi JSON symlinks,
+              and the old ~/.pi/agent/extensions symlink to ~/.agents/pi/extensions
   --codex     Set up only Codex-managed files and relevant package dependencies
   --claude    Set up only Claude-managed files and relevant package dependencies
   --pi        Set up only Pi-managed files and relevant package dependencies
 
+Environment:
+  AGENTS_TAU_DIR          Override the Tau checkout path (default: ~/.agents/tau, then ${DEFAULT_TAU_HINT_DIR})
+  AGENTS_PI_PACKAGE_NAME  Tau package name to install for Pi (default: ${PI_PACKAGE_NAME})
+
 Notes:
   - If no agent flag is provided, set up Codex, Claude, and Pi.
-  - If any agent flag is provided, set up only the specified agents.
-  - Agent flags can be combined.
-  - Installs runtime dependencies for packages that declare dependencies, plus the shared Pi extensions package.
+  - ~/.agents/skills is kept as a symlink to the Tau checkout's skills/ directory.
+  - Codex and Pi use ~/.agents/skills directly; Claude gets per-skill links into ~/.claude/skills.
+  - Pi installs a local Tau package for extensions/themes and syncs AGENTS.md plus ~/.agents/pi/agent/*.json.
   - Uses npm ci when package-lock.json exists; otherwise uses npm install.
 EOF
 }
@@ -716,6 +807,10 @@ apply_summary() {
     parts+=("${#INSTALL_DIRS[@]} $(pluralize "${#INSTALL_DIRS[@]}" "package install" "package installs")")
   fi
 
+  if [[ "${PI_PACKAGE_INSTALL_NEEDED}" -eq 1 ]]; then
+    parts+=("1 Pi package install")
+  fi
+
   join_parts ", " "${parts[@]}"
 }
 
@@ -742,13 +837,16 @@ classify_managed_path() {
   local path="$1"
 
   case "${path}" in
+    "${AGENTS_SKILLS_DIR}")
+      printf '.agents'
+      ;;
     "${CODEX_INSTRUCTIONS_FILE}")
       printf 'Codex'
       ;;
     "${CLAUDE_INSTRUCTIONS_FILE}" | "${CLAUDE_SKILLS_DIR}"/*)
       printf 'Claude'
       ;;
-    "${PI_INSTRUCTIONS_FILE}" | "${PI_AGENT_DIR}"/*.json | "${PI_EXTENSIONS_DIR}"/*)
+    "${PI_INSTRUCTIONS_FILE}" | "${PI_AGENT_DIR}"/*.json | "${PI_EXTENSIONS_DIR}")
       printf 'Pi'
       ;;
     *)
@@ -886,45 +984,18 @@ package_has_runtime_dependencies() {
   grep -q '"dependencies"[[:space:]]*:' "${package_json}"
 }
 
-is_syncable_pi_extension_source() {
-  local path="$1"
-  local base
-
-  [[ -e "${path}" ]] || return 1
-
-  base="$(basename "${path}")"
-  [[ "${base}" == .* ]] && return 1
-  [[ "${base}" == "node_modules" ]] && return 1
-
-  if [[ -d "${path}" ]]; then
-    return 0
-  fi
-
-  [[ -f "${path}" ]] || return 1
-
-  case "${base}" in
-    *.d.ts)
-      return 1
-      ;;
-    *.ts)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
 ensure_runtime_dependencies() {
   if [[ "${DRY_RUN}" -eq 1 ]]; then
     return 0
   fi
 
-  if [[ "${#INSTALL_DIRS[@]}" -eq 0 ]]; then
-    return 0
+  if [[ "${#INSTALL_DIRS[@]}" -gt 0 ]]; then
+    require_command npm
   fi
 
-  require_command npm
+  if [[ "${PI_PACKAGE_INSTALL_NEEDED}" -eq 1 ]]; then
+    require_command pi
+  fi
 }
 
 require_command() {
@@ -934,6 +1005,47 @@ require_command() {
     echo "error: required command not found: ${command}" >&2
     exit 1
   fi
+}
+
+resolve_existing_path() {
+  local path="$1"
+  (
+    cd "${path}" && pwd -P
+  )
+}
+
+pi_package_is_installed() {
+  local package_dir="$1"
+
+  python3 - "$PI_SETTINGS_FILE" "$package_dir" <<'PY'
+import json
+import pathlib
+import sys
+
+settings_path = pathlib.Path(sys.argv[1])
+target = pathlib.Path(sys.argv[2]).resolve()
+
+if not settings_path.exists():
+    raise SystemExit(1)
+
+try:
+    data = json.loads(settings_path.read_text())
+except Exception:
+    raise SystemExit(1)
+
+for entry in data.get("packages", []):
+    source = entry.get("source") if isinstance(entry, dict) else entry
+    if not isinstance(source, str):
+        continue
+    try:
+        resolved = pathlib.Path(source).expanduser().resolve()
+    except Exception:
+        continue
+    if resolved == target:
+        raise SystemExit(0)
+
+raise SystemExit(1)
+PY
 }
 
 main "$@"
